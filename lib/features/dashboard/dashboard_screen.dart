@@ -769,55 +769,20 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
                       },
                     ),
 
-                    // Action Button
+                    // Info validasi
                     Padding(
                       padding: const EdgeInsets.symmetric(
                           horizontal: 16, vertical: 8),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          // Info validasi
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 8),
-                            child: Text(
-                              _buildValidationHint(
-                                  isOnline: true, isWithinRadius: isWithinRadius),
-                              style: const TextStyle(
-                                color: Color(0xFF9CA3AF),
-                                fontSize: 11,
-                              ),
-                            ),
+                      child: Center(
+                        child: Text(
+                          _buildValidationHint(
+                              isOnline: true, isWithinRadius: isWithinRadius),
+                          style: const TextStyle(
+                            color: Color(0xFF9CA3AF),
+                            fontSize: 12,
                           ),
-
-                          SizedBox(
-                            width: double.infinity,
-                            height: 52,
-                            child: ElevatedButton(
-                              onPressed:
-                                  (!_locationPermissionDenied && canPresence)
-                                      ? _handlePresence
-                                      : null,
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: const Color(0xFF22C55E),
-                                foregroundColor: Colors.white,
-                                disabledBackgroundColor:
-                                    const Color(0xFFE5E7EB),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
-                              ),
-                              child: Text(
-                                todayPresence == null
-                                    ? 'Check-In'
-                                    : 'Check-Out',
-                                style: const TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
+                          textAlign: TextAlign.center,
+                        ),
                       ),
                     ),
                   ],
@@ -836,8 +801,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
     if (!_isFaceValid) hints.add('wajah terdeteksi & cocok');
     if (hints.isEmpty) {
       return isOnline
-          ? 'Siap presensi. Tekan tombol di bawah.'
-          : 'Siap presensi offline. Waktu dicatat sekarang, dikirim saat online.';
+          ? 'Memproses presensi otomatis...'
+          : 'Presensi offline dicatat otomatis. Akan dikirim saat online.';
     }
     return 'Diperlukan: ${hints.join(' & ')}';
   }

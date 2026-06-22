@@ -74,13 +74,14 @@ Berikut adalah daftar endpoint API yang digunakan pada aplikasi ini, yang terbag
 ## 2. Fitur Presensi Face Recognition
 
 ### A. Root Model & Dependensi
-Aplikasi ini **TIDAK** menggunakan model berformat `.tflite` khusus secara terpisah. Implementasi pendeteksian wajah mengandalkan paket *Machine Learning* resmi dari Google.
+Aplikasi ini menggunakan kombinasi paket ML Kit dari Google dan model Deep Learning `.tflite` untuk pengenalan wajah yang akurat.
 *   **Package Face Detection**: `google_mlkit_face_detection` (digunakan untuk mencari letak *bounding box* wajah pada frame).
-*   **Package Image Processing**: `image` (digunakan untuk crop, resize, dan membandingkan pixel gambar).
+*   **Package TFLite Flutter**: `tflite_flutter` (digunakan untuk menjalankan model `mobilefacenet.tflite` guna mengekstraksi embedding wajah).
+*   **Package Image Processing**: `image` (digunakan untuk crop dan resize gambar).
 *   **File Logic Utama**: `lib/core/utils/face_matcher.dart` dan `lib/widgets/camera_view.dart`.
 
 ### B. Mekanisme dan Cara Kerja Face Recognition
-Pendekatan pengenalan wajah pada aplikasi ini menggunakan metode perbandingan pixel sederhana (Mean Absolute Difference) yang telah difilter dari lingkungan sekitar (dicrop khusus pada area wajah). Hal ini ditujukan agar tidak memperbesar ukuran APK, tidak membutuhkan komputasi model Deep Learning yang terlalu berat, tapi tetap cukup akurat untuk skenario presensi dengan pasfoto yang terkontrol.
+Pendekatan pengenalan wajah pada aplikasi ini menggunakan model **MobileFaceNet** berformat `.tflite`. Model ini mengekstraksi fitur wajah menjadi 192 dimensi vektor (embedding), yang kemudian dibandingkan menggunakan **Cosine Similarity**. Pendekatan ini memberikan akurasi yang lebih tinggi dan lebih kebal terhadap perubahan pencahayaan dibandingkan metode perbandingan piksel sederhana.
 
 **Langkah-langkah Eksekusi (Alur Logika):**
 
@@ -89,10 +90,11 @@ Pendekatan pengenalan wajah pada aplikasi ini menggunakan metode perbandingan pi
 3.  **Deteksi Wajah (MLKit)**: `FaceDetector` memproses frame untuk menemukan apakah terdapat wajah di layar. Jika ditemukan, MLKit akan mengembalikan titik kordinat `boundingBox` (persegi panjang yang membatasi posisi wajah pada foto).
 4.  **Crop & Resize Frame *Live***: Gambar asli dari kamera dipotong (*crop*) sesuai ukuran `boundingBox` agar bagian latar belakang terbuang. Kemudian wajah di-*resize* ke dimensi statis yaitu **112 x 112 pixel**.
 5.  **Pemrosesan Foto Referensi**: Hal yang sama dilakukan pada **Foto Referensi** (foto wajah karyawan yang diunduh dari server dan di-*cache* ke perangkat). Foto referensi diproses oleh MLKit untuk dicari wajahnya, di-*crop*, dan di-*resize* menjadi 112 x 112 pixel.
-6.  **Perbandingan Pixel (Normalized MAD)**: 
-    *   Sistem menghitung **Normalized Mean Absolute Difference (MAD)** antara *live image* dan *reference image*. 
-    *   Untuk setiap pasang piksel pada gambar 112x112 tersebut, dihitung selisih nilai channel R (Red), G (Green), dan B (Blue).
-    *   Tingkat kemiripan adalah rata-rata deviasi pixel tersebut.
-7.  **Threshold Keputusan**:
-    *   Apabila skor hitungan MAD **di bawah 0.15** (artinya tingkat perbedaan pixel sangat kecil/mirip), maka disimpulkan **Wajah Cocok (Match)**.
-8.  **Debounce State**: Agar tombol *Check-in/Check-out* terbuka secara mulus dan bukan karena *glitch*, status wajah yang "Match" harus tetap stabil selama **1.5 detik** *(debounce)* sebelum diset menjadi valid dan disubmit melalui Employee API ke parameter `is_face_valid`.
+6.  **Ekstraksi Fitur (Embedding)**:
+    *   Sistem memasukkan gambar wajah hasil *crop* (112x112 pixel) ke dalam model `mobilefacenet.tflite`.
+    *   Model menghasilkan **192 array dimensi (embedding)** yang merepresentasikan fitur unik wajah tersebut.
+7.  **Threshold Keputusan (Cosine Similarity)**:
+    *   Sistem menghitung nilai **Cosine Similarity** antara embedding *live image* dan *reference image*.
+    *   Apabila skor kemiripan **mencapai 0.70 atau lebih** (skala 0.0 - 1.0), maka disimpulkan **Wajah Cocok (Match)**.
+8.  **Debounce State**: Agar validasi berjalan mulus dan bukan karena *glitch*, status wajah yang "Match" harus tetap stabil selama **1.5 detik** *(debounce)* sebelum diset menjadi valid dan disubmit melalui Employee API ke parameter `is_face_valid`.
+9.  **Auto-Submit Presensi**: Jika wajah sudah tervalidasi dan pengguna berada di dalam radius kantor, sistem akan langsung melakukan *auto-submit* presensi. Pengguna tidak perlu lagi menekan tombol "Check-in" atau "Check-out" secara manual karena tombol tersebut telah dihilangkan demi mempercepat dan menyederhanakan alur presensi. UI pada layar kamera akan secara otomatis memberikan status pemrosesan.
