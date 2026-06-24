@@ -74,9 +74,10 @@ class ProfileNotifier extends StateNotifier<ProfileState> {
         ..remove('face_photos');
       await UserStorage.saveUser(userData);
 
-      // Download face photos hanya jika ada
+      // Download face photos hanya jika online
+      final isOnline = await OfflineSync.isConnected();
       List<String> updatedPaths = localPaths;
-      if (faceUrls.isNotEmpty) {
+      if (faceUrls.isNotEmpty && isOnline) {
         updatedPaths = await FaceStorage.downloadFacePhotos(
             faceUrls, DioClient.instance);
       }

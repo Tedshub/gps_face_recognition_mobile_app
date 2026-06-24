@@ -6,6 +6,7 @@ import '../../core/storage/user_storage.dart';
 import '../../core/storage/face_storage.dart';
 import '../../core/storage/today_presence_cache.dart';
 import '../../core/utils/offline_sync.dart';
+import '../../core/storage/presence_queue.dart';
 
 /// State untuk DashboardScreen.
 class DashboardState {
@@ -139,12 +140,30 @@ class DashboardNotifier extends StateNotifier<DashboardState> {
       final timeStatus =
           timeStatusResponse?.data['data'] as Map<String, dynamic>?;
 
+      // Cek apakah ada antrian offline untuk hari ini sebelum clear cache
+      bool hasPendingToday = false;
+      try {
+        final pendingItems = await OfflineQueueStorage.getPending();
+        final todayStr = DateTime.now().toIso8601String().split('T').first;
+        for (final item in pendingItems) {
+          final timeStr = item.checkInTime ?? item.offlineDate ?? item.createdAt;
+          final itemDateStr = timeStr.split(' ').first.split('T').first;
+          if (itemDateStr == todayStr) {
+            hasPendingToday = true;
+            break;
+          }
+        }
+      } catch (_) {}
+
       // Simpan today_presence ke cache lokal
       if (todayPresence != null) {
         await TodayPresenceCache.save(todayPresence);
-      } else {
+      } else if (!hasPendingToday) {
         await TodayPresenceCache.saveNull();
       }
+
+      final uiTodayPresence = todayPresence ?? (hasPendingToday ? state.todayPresence : null);
+      final shouldClearPresence = todayPresence == null && !hasPendingToday;
 
       if (userData != null) {
         final localUser = await UserStorage.getUser();
@@ -154,18 +173,18 @@ class DashboardNotifier extends StateNotifier<DashboardState> {
         // Update state dengan mergedUser agar office tetap ada di state UI
         state = state.copyWith(
           userData: mergedUser,
-          todayPresence: todayPresence,
+          todayPresence: uiTodayPresence,
           timeStatus: timeStatus,
           isLoading: false,
-          clearTodayPresence: todayPresence == null,
+          clearTodayPresence: shouldClearPresence,
         );
       } else {
         state = state.copyWith(
           userData: fallbackUser,
-          todayPresence: todayPresence,
+          todayPresence: uiTodayPresence,
           timeStatus: timeStatus,
           isLoading: false,
-          clearTodayPresence: todayPresence == null,
+          clearTodayPresence: shouldClearPresence,
         );
       }
     } on DioException catch (e) {

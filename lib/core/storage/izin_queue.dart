@@ -1,18 +1,23 @@
-import 'dart:convert';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:uuid/uuid.dart';
+import 'local_db_helper.dart';
+import 'presence_queue.dart';
 
-/// Model satu item izin yang menunggu dikirim ke server.
+// ---------------------------------------------------------------------------
+// IzinQueue — dipetakan ke OfflineQueueStorage (SQLite, bukan SharedPreferences)
+// ---------------------------------------------------------------------------
+
 class OfflineIzinItem {
   final String id;
   final String jenisIzin;
   final String izinKeterangan;
 
-  /// Path lokal dokumen pendukung (bisa null).
-  final String? dokumenPath;
+  /// offlineDate: tanggal izin dalam format 'yyyy-MM-dd'
+  final String offlineDate;
 
-  /// Waktu pengajuan di device (ISO8601).
-  final String timestamp;
+  /// officeId — diperlukan oleh endpoint offline-sync
+  final int officeId;
+
+  /// Path lokal dokumen (tidak didukung oleh endpoint offline-sync, diabaikan saat sync)
+  final String? dokumenPath;
 
   bool synced;
 
@@ -20,89 +25,58 @@ class OfflineIzinItem {
     required this.id,
     required this.jenisIzin,
     required this.izinKeterangan,
+    required this.offlineDate,
+    required this.officeId,
     this.dokumenPath,
-    required this.timestamp,
     this.synced = false,
   });
 
-  Map<String, dynamic> toJson() => {
-        'id': id,
-        'jenis_izin': jenisIzin,
-        'izin_keterangan': izinKeterangan,
-        'dokumen_path': dokumenPath,
-        'timestamp': timestamp,
-        'synced': synced,
-      };
-
-  factory OfflineIzinItem.fromJson(Map<String, dynamic> json) => OfflineIzinItem(
-        id: json['id'] as String,
-        jenisIzin: json['jenis_izin'] as String,
-        izinKeterangan: json['izin_keterangan'] as String,
-        dokumenPath: json['dokumen_path'] as String?,
-        timestamp: json['timestamp'] as String,
-        synced: json['synced'] as bool? ?? false,
+  factory OfflineIzinItem.fromMap(Map<String, dynamic> map) => OfflineIzinItem(
+        id: map['id'] as String,
+        jenisIzin: map['jenis_izin'] as String? ?? '',
+        izinKeterangan: map['izin_keterangan'] as String? ?? '',
+        offlineDate: map['offline_date'] as String? ?? '',
+        officeId: map['office_id'] as int? ?? 0,
+        synced: (map['sync_status'] as String?) == 'synced',
       );
 }
 
-/// Antrian offline untuk pengajuan izin/cuti.
-/// Key: offline_izin_queue (JSON array)
 class IzinQueue {
-  static const _key = 'offline_izin_queue';
-  static const _uuid = Uuid();
 
-  /// Baca semua item dari queue.
+  /// Baca semua item izin pending.
   static Future<List<OfflineIzinItem>> getAll() async {
-    final prefs = await SharedPreferences.getInstance();
-    final json = prefs.getString(_key);
-    if (json == null) return [];
-    final list = jsonDecode(json) as List<dynamic>;
-    return list
-        .map((e) => OfflineIzinItem.fromJson(e as Map<String, dynamic>))
+    final rows = await LocalDbHelper.instance.getPendingQueueItems();
+    return rows
+        .where((r) => r['type'] == 'izin')
+        .map((r) => OfflineIzinItem.fromMap(r))
         .toList();
   }
 
-  /// Tambah item baru ke antrian.
+  /// Tambah izin ke antrian dengan officeId dan tanggal izin.
   static Future<void> enqueue({
     required String jenisIzin,
     required String izinKeterangan,
+    required int officeId,
+    required String offlineDate,
     String? dokumenPath,
   }) async {
-    final items = await getAll();
-    items.add(OfflineIzinItem(
-      id: _uuid.v4(),
+    await OfflineQueueStorage.enqueueIzin(
+      officeId: officeId,
+      offlineDate: offlineDate,
       jenisIzin: jenisIzin,
       izinKeterangan: izinKeterangan,
-      dokumenPath: dokumenPath,
-      timestamp: DateTime.now().toIso8601String(),
-    ));
-    await _save(items);
+    );
   }
 
-  /// Tandai item sebagai sudah synced.
   static Future<void> markSynced(String id) async {
-    final items = await getAll();
-    for (final item in items) {
-      if (item.id == id) item.synced = true;
-    }
-    await _save(items);
+    await OfflineQueueStorage.markSynced(id);
   }
 
-  /// Hapus item yang sudah synced.
   static Future<void> clearSynced() async {
-    final items = await getAll();
-    final remaining = items.where((e) => !e.synced).toList();
-    await _save(remaining);
+    await OfflineQueueStorage.clearSynced();
   }
 
-  /// Hapus seluruh antrian (saat logout).
   static Future<void> clearAll() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_key);
-  }
-
-  static Future<void> _save(List<OfflineIzinItem> items) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(
-        _key, jsonEncode(items.map((e) => e.toJson()).toList()));
+    await LocalDbHelper.instance.clearAllQueueItems();
   }
 }

@@ -1,12 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'core/api/dio_client.dart';
+import 'core/services/background_sync_service.dart';
 import 'features/auth/auth_notifier.dart';
 import 'features/dashboard/dashboard_notifier.dart';
 import 'navigation/router.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  // Initialize Background Sync Workmanager
+  await BackgroundSyncService.initialize();
+  BackgroundSyncService.registerPeriodicSync();
+
   runApp(
     // ProviderScope diperlukan untuk flutter_riverpod
     const ProviderScope(

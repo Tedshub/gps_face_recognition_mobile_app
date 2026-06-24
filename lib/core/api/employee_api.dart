@@ -1,5 +1,7 @@
 import 'package:dio/dio.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'dio_client.dart';
+import '../storage/presence_queue.dart';
 
 /// API calls untuk endpoint employee.
 class EmployeeApi {
@@ -25,13 +27,41 @@ class EmployeeApi {
 
   /// POST /employee/presences
   /// Check-in atau check-out (server auto-deteksi).
-  /// Body: { office_id, latitude, longitude, is_face_valid }
+  /// Body: { office_id, latitude, longitude, is_face_valid, timestamp }
   static Future<Response> submitPresence({
     required int officeId,
     required double latitude,
     required double longitude,
     required bool isFaceValid,
+    String? timestamp, // Optional, diisi jika dipanggil dari background sync
   }) async {
+    final connectivityResult = await Connectivity().checkConnectivity();
+    final isOffline = connectivityResult.contains(ConnectivityResult.none) || connectivityResult.isEmpty;
+
+    if (isOffline) {
+      // Simpan ke SQLite queue
+      await PresenceQueue.enqueue(
+        officeId: officeId,
+        latitude: latitude,
+        longitude: longitude,
+        isFaceValid: isFaceValid,
+      );
+      // Return fake success response
+      return Response(
+        requestOptions: RequestOptions(path: '/employee/presences'),
+        statusCode: 200,
+        statusMessage: 'Saved Offline',
+        data: {
+          'message': 'Presensi disimpan offline. Akan dikirim otomatis saat koneksi kembali.'
+        },
+      );
+    }
+
+    // Online: Kirim langsung
+    final dt = timestamp != null ? DateTime.parse(timestamp).toLocal() : DateTime.now();
+    final String timeToSend = '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')} '
+        '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}:${dt.second.toString().padLeft(2, '0')}';
+
     return await _dio.post(
       '/employee/presences',
       data: FormData.fromMap({
@@ -39,6 +69,7 @@ class EmployeeApi {
         'latitude': latitude.toString(),
         'longitude': longitude.toString(),
         'is_face_valid': isFaceValid ? '1' : '0',
+        'timestamp': timeToSend, // Backend harus mendukung parameter ini
       }),
     );
   }
@@ -85,5 +116,22 @@ class EmployeeApi {
   /// Status buka/tutup check-in, check-out, dan izin saat ini.
   static Future<Response> getTimeStatus() async {
     return await _dio.get('/employee/presences/time-status');
+  }
+
+  /// POST /employee/presences/offline-sync
+  /// Sinkronisasi antrian presensi offline secara bulk.
+  ///
+  /// Menerima list [records] berformat payload sesuai dokumentasi API.
+  /// Setiap record harus memiliki field: type, office_id, is_offline_sync,
+  /// serta field tambahan sesuai tipenya.
+  ///
+  /// Mengembalikan response dari server (200 OK dengan detail per-record).
+  static Future<Response> syncOfflinePresences(
+      List<Map<String, dynamic>> records) async {
+    return await _dio.post(
+      '/employee/presences/offline-sync',
+      data: {'records': records},
+      options: Options(headers: {'Content-Type': 'application/json'}),
+    );
   }
 }

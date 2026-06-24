@@ -7,7 +7,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:dio/dio.dart';
 import '../../core/api/employee_api.dart';
 import '../../core/storage/user_storage.dart';
-import '../../core/storage/presence_queue.dart';
+import '../../core/storage/presence_queue.dart'; // OfflineQueueStorage, PresenceQueue
 import '../../core/storage/izin_queue.dart';
 import '../../core/utils/geo.dart';
 import '../../core/utils/offline_sync.dart';
@@ -18,6 +18,7 @@ import '../../widgets/status_badge.dart';
 import '../../widgets/camera_view.dart';
 import '../auth/auth_notifier.dart';
 import 'dashboard_notifier.dart';
+import '../../core/utils/security_checker.dart';
 
 /// DashboardScreen — Tab 0
 /// Menampilkan: lokasi GPS, status presensi hari ini, kamera wajah, form izin.
@@ -42,12 +43,17 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
 
   // Izin form
   final _izinFormKey = GlobalKey<FormState>();
-  String _jenisIzin = 'Izin';
+  String _jenisIzin = 'Sakit';
   final _keteranganController = TextEditingController();
   String? _dokumenPath;
   String? _dokumenName;
+  bool _showCheckoutCamera = false;
   bool _isSubmittingIzin = false;
   bool _isSubmittingPresence = false;
+
+  // Security
+  bool _isSecurityCompromised = false;
+  String _securityMessage = '';
 
   @override
   void initState() {
@@ -55,6 +61,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
     WidgetsBinding.instance.addObserver(this);
     OfflineSync.setContext(context);
     OfflineSync.startListening();
+    _runSecurityCheck();
     _requestLocationAndStart();
 
     // Startup refresh — sync queue jika online, load cache jika offline.
@@ -62,6 +69,17 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
       () => ref.read(dashboardProvider.notifier).startupRefresh(),
     );
   }
+
+  Future<void> _runSecurityCheck() async {
+    final status = await SecurityChecker.checkDeviceSecurity();
+    if (!status.isSafe && mounted) {
+      setState(() {
+        _isSecurityCompromised = true;
+        _securityMessage = status.message;
+      });
+    }
+  }
+
 
   @override
   void dispose() {
@@ -151,9 +169,16 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
         ),
       ).listen((position) {
         if (mounted) {
-          setState(() {
-            _lastPosition = position;
-          });
+          if (position.isMocked) {
+            setState(() {
+              _isSecurityCompromised = true;
+              _securityMessage = 'Kecurangan GPS terdeteksi. Aplikasi tidak dapat digunakan.';
+            });
+          } else {
+            setState(() {
+              _lastPosition = position;
+            });
+          }
         }
       });
     } catch (_) {}
@@ -274,21 +299,51 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
           );
         }
       } else {
-        // --- Offline: simpan ke antrian dengan timestamp sekarang ---
+        // --- Offline: simpan ke antrian dengan timestamp asli saat ini ---
         final now = DateTime.now();
-        final nowIso = now.toIso8601String();
+
+        // Format waktu sesuai yang dibutuhkan endpoint: 'yyyy-MM-dd HH:mm:ss'
+        final formattedNow =
+            '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')} '
+            '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
         final todayDate =
             '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
 
         // Tentukan tipe: check-in atau check-out
         final isCheckIn = todayPresence == null;
 
-        await PresenceQueue.enqueue(
-          officeId: officeId,
-          latitude: lat,
-          longitude: lng,
-          isFaceValid: _isFaceValid,
-        );
+        if (isCheckIn) {
+          // Simpan sebagai check_in dengan waktu asli saat ini
+          await OfflineQueueStorage.enqueueCheckIn(
+            officeId: officeId,
+            latitude: lat,
+            longitude: lng,
+            isFaceValid: _isFaceValid,
+            checkInTime: formattedNow, // waktu asli check-in offline
+          );
+        } else {
+          // Simpan sebagai check_out — sertakan check_in_time dari data yang ada
+          final existingCheckInTime = todayPresence['check_in_time'] as String?;
+          // Normalisasi check_in_time ke format 'yyyy-MM-dd HH:mm:ss'
+          String checkInFormatted = formattedNow;
+          if (existingCheckInTime != null) {
+            try {
+              final ciDt = DateTime.parse(existingCheckInTime).toLocal();
+              checkInFormatted =
+                  '${ciDt.year}-${ciDt.month.toString().padLeft(2, '0')}-${ciDt.day.toString().padLeft(2, '0')} '
+                  '${ciDt.hour.toString().padLeft(2, '0')}:${ciDt.minute.toString().padLeft(2, '0')}:${ciDt.second.toString().padLeft(2, '0')}';
+            } catch (_) {}
+          }
+
+          await OfflineQueueStorage.enqueueCheckOut(
+            officeId: officeId,
+            latitude: lat,
+            longitude: lng,
+            isFaceValid: _isFaceValid,
+            checkInTime: checkInFormatted,
+            checkOutTime: formattedNow, // waktu asli check-out offline
+          );
+        }
 
         // Bangun data presensi lokal untuk update card segera
         Map<String, dynamic> offlinePresenceData;
@@ -296,7 +351,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
           offlinePresenceData = {
             'id': null,
             'date': todayDate,
-            'check_in_time': nowIso,
+            'check_in_time': formattedNow,
             'check_out_time': null,
             'status': 'present', // status sementara, server yang final
             'early_leave': false,
@@ -314,7 +369,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
         } else {
           // Update check_out_time pada data yang sudah ada
           offlinePresenceData = Map<String, dynamic>.from(todayPresence);
-          offlinePresenceData['check_out_time'] = nowIso;
+          offlinePresenceData['check_out_time'] = formattedNow;
           offlinePresenceData['_offline'] = true;
         }
 
@@ -336,7 +391,12 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
         );
       }
     } finally {
-      if (mounted) setState(() => _isSubmittingPresence = false);
+      if (mounted) {
+        setState(() {
+          _isSubmittingPresence = false;
+          _showCheckoutCamera = false; // Sembunyikan kamera setelah submit
+        });
+      }
     }
   }
 
@@ -407,20 +467,25 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
     } else {
       // --- Offline: simpan ke antrian ---
       try {
+        // Ambil officeId dari userData melalui provider
+        final dashboardState = ref.read(dashboardProvider);
+        final officeIdForIzin =
+            (dashboardState.userData?['office']?['id'] as int?) ?? 0;
+        final now = DateTime.now();
+        final todayDateStr =
+            '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+
         await IzinQueue.enqueue(
           jenisIzin: _jenisIzin,
           izinKeterangan: _keteranganController.text,
-          dokumenPath: _dokumenPath,
+          officeId: officeIdForIzin,
+          offlineDate: todayDateStr, // tanggal izin = hari ini saat offline
         );
 
-        // Bangun data izin lokal untuk update card
-        final now = DateTime.now();
-        final todayDate =
-            '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
-
+        // Bangun data izin lokal untuk update card (reuse todayDateStr)
         final offlineIzinData = {
           'id': null,
-          'date': todayDate,
+          'date': todayDateStr,
           'check_in_time': null,
           'check_out_time': null,
           'status': 'izin',
@@ -460,6 +525,63 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
 
   @override
   Widget build(BuildContext context) {
+    if (_isSecurityCompromised) {
+      return Scaffold(
+        backgroundColor: Colors.white,
+        appBar: AppBar(
+          backgroundColor: Colors.white,
+          title: const Text('Keamanan Sistem',
+              style: TextStyle(
+                  color: Color(0xFF1F2937), fontWeight: FontWeight.bold)),
+          elevation: 0,
+        ),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.gpp_bad_outlined,
+                    size: 80, color: Color(0xFFEF4444)),
+                const SizedBox(height: 24),
+                const Text(
+                  'Akses Ditolak',
+                  style: TextStyle(
+                      color: Color(0xFF1F2937),
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  _securityMessage.isNotEmpty
+                      ? _securityMessage
+                      : 'Kecurangan GPS/Sistem terdeteksi, anda tidak dapat mengakses aplikasi ini.',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Color(0xFF6B7280), fontSize: 16, height: 1.5),
+                ),
+                const SizedBox(height: 32),
+                ElevatedButton.icon(
+                  onPressed: () {
+                    setState(() {
+                      _isSecurityCompromised = false;
+                    });
+                    _runSecurityCheck();
+                  },
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Periksa Ulang Keamanan'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF1F2937),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
     final auth = ref.watch(authProvider);
     final isAuth = auth.status == AuthStatus.authenticated;
 
@@ -758,33 +880,50 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
 
                   // Camera (hidden if izin, sudah check-out, atau presensi ditutup)
                   if (!isIzin && !isCheckedOut && isPresenceOpen) ...[
-                    CameraView(
-                      onFaceValidChanged: (valid) {
-                        setState(() => _isFaceValid = valid);
+                    if (todayPresence == null || _showCheckoutCamera) ...[
+                      CameraView(
+                        onFaceValidChanged: (valid) {
+                          setState(() => _isFaceValid = valid);
 
-                        // Otomatis submit jika valid, dalam radius, dan belum proses submit
-                        if (valid && isWithinRadius && !_isSubmittingPresence && !_locationPermissionDenied) {
-                          _handlePresence();
-                        }
-                      },
-                    ),
+                          // Otomatis submit jika valid, dalam radius, dan belum proses submit
+                          if (valid && isWithinRadius && !_isSubmittingPresence && !_locationPermissionDenied) {
+                            _handlePresence();
+                          }
+                        },
+                      ),
 
-                    // Info validasi
-                    Padding(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 8),
-                      child: Center(
-                        child: Text(
-                          _buildValidationHint(
-                              isOnline: true, isWithinRadius: isWithinRadius),
-                          style: const TextStyle(
-                            color: Color(0xFF9CA3AF),
-                            fontSize: 12,
+                      // Info validasi
+                      Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 8),
+                        child: Center(
+                          child: Text(
+                            _buildValidationHint(
+                                isOnline: true, isWithinRadius: isWithinRadius),
+                            style: const TextStyle(
+                              color: Color(0xFF9CA3AF),
+                              fontSize: 12,
+                            ),
+                            textAlign: TextAlign.center,
                           ),
-                          textAlign: TextAlign.center,
                         ),
                       ),
-                    ),
+                    ] else ...[
+                      // Tombol untuk membuka kamera Check-Out
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        child: ElevatedButton.icon(
+                          onPressed: () => setState(() => _showCheckoutCamera = true),
+                          icon: const Icon(Icons.camera_alt),
+                          label: const Text('Buka Kamera untuk Presensi Pulang'),
+                          style: ElevatedButton.styleFrom(
+                            minimumSize: const Size(double.infinity, 48),
+                            backgroundColor: const Color(0xFF22C55E),
+                            foregroundColor: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ],
                   ],
 
 

@@ -167,11 +167,16 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                     Icons.work_outlined, user['jabatan'] as String? ?? '-'),
                 _buildInfoRow(
                     Icons.email_outlined, user['email'] as String? ?? '-'),
-                if (user['office'] != null)
+                if (user['office'] != null) ...[
                   _buildInfoRow(
                     Icons.business_outlined,
                     (user['office'] as Map)['office_name'] as String? ?? '-',
                   ),
+                  _buildInfoRow(
+                    Icons.location_on_outlined,
+                    '${(user['office'] as Map)['latitude'] ?? '-'}, ${(user['office'] as Map)['longitude'] ?? '-'}',
+                  ),
+                ],
               ],
             ),
           ),
