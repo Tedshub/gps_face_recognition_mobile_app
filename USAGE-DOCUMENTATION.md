@@ -69,6 +69,11 @@ Berikut adalah daftar endpoint API yang digunakan pada aplikasi ini, yang terbag
     *   **Deskripsi**: Mengambil status konfigurasi waktu buka/tutup absensi *check-in*, *check-out*, dan jam izin saat ini.
     *   **Authorization**: Bearer Token.
 
+*   **`POST /employee/presences/offline-sync`**
+    *   **Deskripsi**: Digunakan untuk melakukan sinkronisasi data presensi yang dilakukan saat perangkat dalam keadaan tidak ada koneksi internet (offline). Data presensi offline yang tersimpan di memori lokal (termasuk swafoto, metadata, dll.) akan dikirimkan ke server secara massal/bertahap.
+    *   **Request Body** (JSON): Array of objects yang masing-masing berisi data lokal antrean presensi.
+    *   **Authorization**: Bearer Token.
+
 ---
 
 ## 2. Fitur Presensi Face Recognition
@@ -88,13 +93,13 @@ Pendekatan pengenalan wajah pada aplikasi ini menggunakan model **MobileFaceNet*
 1.  **Pengambilan Frame (Throttling)**: Kamera mengambil gambar dari *live stream*. Agar UI tidak lag (terhindar dari beban CPU), pemrosesan wajah dibatasi *(throttled)* sebesar **1 frame per detik**.
 2.  **Konversi Format Gambar**: Frame `CameraImage` dari native camera diubah menjadi format `InputImage` yang dikenali oleh Google MLKit.
 3.  **Deteksi Wajah (MLKit)**: `FaceDetector` memproses frame untuk menemukan apakah terdapat wajah di layar. Jika ditemukan, MLKit akan mengembalikan titik kordinat `boundingBox` (persegi panjang yang membatasi posisi wajah pada foto).
-4.  **Crop & Resize Frame *Live***: Gambar asli dari kamera dipotong (*crop*) sesuai ukuran `boundingBox` agar bagian latar belakang terbuang. Kemudian wajah di-*resize* ke dimensi statis yaitu **112 x 112 pixel**.
-5.  **Pemrosesan Foto Referensi**: Hal yang sama dilakukan pada **Foto Referensi** (foto wajah karyawan yang diunduh dari server dan di-*cache* ke perangkat). Foto referensi diproses oleh MLKit untuk dicari wajahnya, di-*crop*, dan di-*resize* menjadi 112 x 112 pixel.
+4.  **Crop & Resize Frame *Live***: Gambar asli dari kamera dipotong (*crop*) berdasarkan kordinat `boundingBox`. Untuk menghindari terpotongnya area penting wajah seperti dahi dan rahang, sistem secara dinamis menambahkan **margin/padding sebesar 20%** dari total panjang/lebar wajah. Kemudian gambar yang telah dipotong di-*resize* ke dimensi statis yaitu **112 x 112 pixel**.
+5.  **Pemrosesan Foto Referensi**: Hal yang sama dilakukan pada **Foto Referensi** (foto wajah karyawan yang diunduh dari server dan di-*cache* ke perangkat). Saat dimuat, sistem memastikan orientasi piksel sesuai dengan rotasi aslinya (*bake Exif orientation*) agar hasil deteksi ML Kit tetap akurat. Foto dipotong dengan margin 20%, dan di-*resize* menjadi 112 x 112 pixel.
 6.  **Ekstraksi Fitur (Embedding)**:
     *   Sistem memasukkan gambar wajah hasil *crop* (112x112 pixel) ke dalam model `mobilefacenet.tflite`.
     *   Model menghasilkan **192 array dimensi (embedding)** yang merepresentasikan fitur unik wajah tersebut.
 7.  **Threshold Keputusan (Cosine Similarity)**:
     *   Sistem menghitung nilai **Cosine Similarity** antara embedding *live image* dan *reference image*.
-    *   Apabila skor kemiripan **mencapai 0.70 atau lebih** (skala 0.0 - 1.0), maka disimpulkan **Wajah Cocok (Match)**.
+    *   Apabila skor kemiripan **mencapai 0.82 atau lebih** (skala 0.0 - 1.0), maka disimpulkan **Wajah Cocok (Match)**. Threshold di angka 0.82 diimplementasikan agar sistem bersifat lebih *strict* dan menghindari masuknya wajah palsu atau wajah orang lain (*False Positive*).
 8.  **Debounce State**: Agar validasi berjalan mulus dan bukan karena *glitch*, status wajah yang "Match" harus tetap stabil selama **1.5 detik** *(debounce)* sebelum diset menjadi valid dan disubmit melalui Employee API ke parameter `is_face_valid`.
 9.  **Auto-Submit Presensi**: Jika wajah sudah tervalidasi dan pengguna berada di dalam radius kantor, sistem akan langsung melakukan *auto-submit* presensi. Pengguna tidak perlu lagi menekan tombol "Check-in" atau "Check-out" secara manual karena tombol tersebut telah dihilangkan demi mempercepat dan menyederhanakan alur presensi. UI pada layar kamera akan secara otomatis memberikan status pemrosesan.

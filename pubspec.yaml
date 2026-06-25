@@ -75,6 +75,8 @@ flutter:
   uses-material-design: true
   assets:
     - assets/models/
+    - assets/guide/
+    - assets/icons/
 flutter_launcher_icons:
   android: true
   ios: true

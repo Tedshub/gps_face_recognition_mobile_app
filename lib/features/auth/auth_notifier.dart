@@ -12,6 +12,7 @@ import '../../core/storage/today_presence_cache.dart';
 import '../../core/storage/doc_cache.dart';
 import '../../core/api/dio_client.dart';
 import '../../core/services/background_sync_service.dart';
+import '../../core/storage/local_db_helper.dart';
 
 /// State autentikasi.
 enum AuthStatus { unknown, authenticated, unauthenticated }
@@ -175,6 +176,8 @@ class AuthNotifier extends StateNotifier<AuthState> {
     await IzinQueue.clearAll();
     await TodayPresenceCache.clearAll();
     await DocCache.clearAll();
+    await LocalDbHelper.instance.clearAllQueueItems();
+    await LocalDbHelper.instance.clearCache();
     await BackgroundSyncService.cancelAll();
 
     state = state.copyWith(

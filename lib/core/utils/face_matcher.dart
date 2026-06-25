@@ -65,8 +65,11 @@ class FaceMatcher {
       if (refFaces.isEmpty) continue;
 
       final refBytes = await refFile.readAsBytes();
-      final refImg = img.decodeImage(refBytes);
+      img.Image? refImg = img.decodeImage(refBytes);
       if (refImg == null) continue;
+
+      // Pastikan rotasi Exif dari kamera diaplikasikan
+      refImg = img.bakeOrientation(refImg);
 
       final refFace = refFaces.first;
       final refCrop = _cropFace(refImg, refFace.boundingBox);
@@ -132,7 +135,7 @@ class FaceMatcher {
         final refEmbedding = _referenceCache[refPath];
         if (refEmbedding == null) continue;
         final similarity = _cosineSimilarity(liveEmbedding, refEmbedding);
-        if (similarity >= 0.70) {
+        if (similarity >= 0.82) {
           return FaceMatchResult(
             hasFace: true,
             isMatch: true,
@@ -196,10 +199,15 @@ class FaceMatcher {
   /// Crop area wajah dari gambar berdasarkan bounding box.
   static img.Image? _cropFace(img.Image source, dynamic boundingBox) {
     try {
-      final x = boundingBox.left.toInt().clamp(0, source.width - 1);
-      final y = boundingBox.top.toInt().clamp(0, source.height - 1);
-      final w = boundingBox.width.toInt().clamp(1, source.width - x);
-      final h = boundingBox.height.toInt().clamp(1, source.height - y);
+      // Tambahkan margin 20% agar dagu dan rahang tidak terpotong
+      final marginX = (boundingBox.width * 0.20).toInt();
+      final marginY = (boundingBox.height * 0.20).toInt();
+
+      final x = (boundingBox.left.toInt() - marginX).clamp(0, source.width - 1);
+      final y = (boundingBox.top.toInt() - marginY).clamp(0, source.height - 1);
+      final w = (boundingBox.width.toInt() + marginX * 2).clamp(1, source.width - x);
+      final h = (boundingBox.height.toInt() + marginY * 2).clamp(1, source.height - y);
+      
       return img.copyCrop(source, x: x, y: y, width: w, height: h);
     } catch (_) {
       return null;

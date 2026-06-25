@@ -59,9 +59,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     // Hanya watch isLoading agar tidak rebuild saat status auth berubah
     final isLoading = ref.watch(authProvider.select((s) => s.isLoading));
 
-    return Center(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 40),
+    return Scaffold(
+      backgroundColor: Colors.white,
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 40),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
               children: [
@@ -212,7 +215,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
               ],
         ),
       ),
-    );
+    )));
   }
 
   Widget _buildLabel(String text) {

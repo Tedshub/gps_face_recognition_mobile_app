@@ -2,7 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:permission_handler/permission_handler.dart';
+import 'package:permission_handler/permission_handler.dart' hide ServiceStatus;
 import 'package:file_picker/file_picker.dart';
 import 'package:dio/dio.dart';
 import '../../core/api/employee_api.dart';
@@ -34,6 +34,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
   // GPS
   bool _locationPermissionDenied = false;
   StreamSubscription<Position>? _locationSub;
+  StreamSubscription<ServiceStatus>? _serviceStatusSub;
+  bool _isGpsEnabled = true;
 
   /// Posisi GPS terakhir yang diketahui — digunakan untuk submit presensi.
   Position? _lastPosition;
@@ -43,7 +45,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
 
   // Izin form
   final _izinFormKey = GlobalKey<FormState>();
-  String _jenisIzin = 'Sakit';
+  String _jenisIzin = 'Izin';
   final _keteranganController = TextEditingController();
   String? _dokumenPath;
   String? _dokumenName;
@@ -84,6 +86,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _serviceStatusSub?.cancel();
     _locationSub?.cancel();
     _keteranganController.dispose();
     super.dispose();
@@ -131,37 +134,39 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
 
     try {
       final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Mohon aktifkan GPS perangkat Anda.'),
-            backgroundColor: Colors.orange,
-          ),
-        );
-      }
-    } catch (_) {}
-
-    try {
-      final pos = await Geolocator.getLastKnownPosition();
-      if (pos != null && mounted) {
-        setState(() {
-          _lastPosition = pos;
-        });
-      }
-    } catch (_) {}
-
-    try {
-      final pos = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-      ).timeout(const Duration(seconds: 4));
       if (mounted) {
-        setState(() {
-          _lastPosition = pos;
-        });
+        setState(() => _isGpsEnabled = serviceEnabled);
+      }
+
+      _serviceStatusSub ??= Geolocator.getServiceStatusStream().listen((status) {
+        if (mounted) {
+          setState(() {
+            _isGpsEnabled = status == ServiceStatus.enabled;
+          });
+          if (_isGpsEnabled && _locationSub == null) {
+            _initStreamOnly();
+          } else if (!_isGpsEnabled) {
+            _locationSub?.cancel();
+            _locationSub = null;
+          }
+        }
+      });
+
+      if (serviceEnabled) {
+        _initStreamOnly();
       }
     } catch (_) {}
+  }
 
+  void _initStreamOnly() {
+    _locationSub?.cancel();
     try {
+      Geolocator.getLastKnownPosition().then((pos) {
+        if (pos != null && mounted) {
+          setState(() => _lastPosition = pos);
+        }
+      }).catchError((_) {});
+
       _locationSub = Geolocator.getPositionStream(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.high,
@@ -180,6 +185,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
             });
           }
         }
+      }, onError: (error) {
+        // Abaikan error stream
       });
     } catch (_) {}
   }
@@ -680,10 +687,16 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
         actions: [
           if (userData != null) ...[
             IconButton(
+              icon: const Icon(Icons.calendar_month,
+                  color: Color(0xFF6B7280)),
+              tooltip: 'Jadwal & Izin',
+              onPressed: () => _showTimeStatusModal(context),
+            ),
+            IconButton(
               icon: const Icon(Icons.info_outline,
                   color: Color(0xFF6B7280)),
-              tooltip: 'Status Waktu',
-              onPressed: () => _showTimeStatusModal(context),
+              tooltip: 'Panduan Presensi',
+              onPressed: () => context.push('/presence-guide'),
             ),
           ],
         ],
@@ -877,6 +890,35 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
                       ),
                     ),
                   ),
+
+                  if (!_isGpsEnabled)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      child: Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFEF2F2),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: const Color(0xFFFCA5A5).withValues(alpha: 0.5)),
+                        ),
+                        child: const Row(
+                          children: [
+                            Icon(Icons.location_off, color: Color(0xFFEF4444), size: 24),
+                            SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                'GPS belum diaktifkan, silahkan aktifkan GPS terlebih dahulu',
+                                style: TextStyle(
+                                  color: Color(0xFF991B1B),
+                                  fontSize: 14,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
 
                   // Camera (hidden if izin, sudah check-out, atau presensi ditutup)
                   if (!isIzin && !isCheckedOut && isPresenceOpen) ...[
@@ -1245,7 +1287,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             const Text(
-              'Status Jadwal',
+              'Jadwal',
               style: TextStyle(
                 color: Color(0xFF1F2937),
                 fontSize: 16,
@@ -1477,7 +1519,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
                             style:
                                 const TextStyle(color: Color(0xFF1F2937)),
                             decoration: InputDecoration(
-                              labelText: 'Jenis Izin',
+                              labelText: 'Jenis Izin *',
                               labelStyle: const TextStyle(
                                   color: Color(0xFF6B7280)),
                               filled: true,
@@ -1508,7 +1550,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
                             maxLines: 3,
                             maxLength: 1000,
                             decoration: InputDecoration(
-                              labelText: 'Keterangan',
+                              labelText: 'Keterangan *',
                               labelStyle: const TextStyle(
                                   color: Color(0xFF6B7280)),
                               counterStyle: const TextStyle(
