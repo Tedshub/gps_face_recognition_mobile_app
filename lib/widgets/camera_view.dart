@@ -12,7 +12,7 @@ import '../core/utils/face_matcher.dart';
 /// - Toggle aktif/nonaktif (kamera off by default)
 /// - Overlay: abu-abu (tidak ada wajah) / merah (tidak cocok) / hijau (cocok)
 /// - Face matching throttled 1 frame/detik
-/// - 1.5 detik debounce sebelum isFaceValid = true
+/// - Debug: tampilkan nilai cosine similarity untuk fine-tuning threshold
 class CameraView extends StatefulWidget {
   final void Function(bool isValid) onFaceValidChanged;
 
@@ -34,6 +34,9 @@ class _CameraViewState extends State<CameraView> {
   bool _isFrontCamera = true;
   bool _isInitializing = false;
 
+  /// [Fix #3] Indikator saat embedding referensi sedang di-load
+  bool _isLoadingEmbeddings = false;
+
   _OverlayState _overlayState = _OverlayState.neutral;
   Timer? _throttleTimer;
   bool _isProcessing = false;
@@ -49,26 +52,44 @@ class _CameraViewState extends State<CameraView> {
   @override
   void initState() {
     super.initState();
+    // [Fix #3] Load paths saat init — tidak menunggu embedding selesai
+    // agar UI tidak terblokir. Embedding akan selesai sebelum kamera aktif.
     _loadReferencePaths();
   }
 
+  /// [Fix #3] Load reference paths dan embedding secara async.
+  /// Embedding HARUS selesai sebelum startImageStream dipanggil.
+  /// Dipisah dari _initCamera agar bisa dipanggil di initState tanpa
+  /// memblokir UI.
   Future<void> _loadReferencePaths() async {
     _referencePhotoPaths = await UserStorage.getFacePhotosPaths();
-    // Prapemrosesan: Cache TFLite Embedding
+    // Pra-load embedding di background — hasilnya akan siap saat kamera diaktifkan
     await FaceMatcher.loadReferenceEmbeddings(_referencePhotoPaths);
   }
 
   Future<void> _initCamera() async {
     if (_isInitializing) return;
-    setState(() => _isInitializing = true);
+    setState(() {
+      _isInitializing = true;
+      _isLoadingEmbeddings = true;
+    });
 
-    // Reload reference embeddings setiap kali kamera diaktifkan
+    // [Fix #3] Reload reference embeddings setiap kali kamera diaktifkan
     // agar selalu sinkron dengan foto profil terbaru.
-    await _loadReferencePaths();
+    // Kamera BARU dimulai setelah embedding selesai — menghindari race condition.
+    _referencePhotoPaths = await UserStorage.getFacePhotosPaths();
+    await FaceMatcher.loadReferenceEmbeddings(_referencePhotoPaths);
+
+    if (mounted) {
+      setState(() => _isLoadingEmbeddings = false);
+    }
 
     try {
       _cameras = await availableCameras();
-      if (_cameras.isEmpty) return;
+      if (_cameras.isEmpty) {
+        if (mounted) setState(() => _isInitializing = false);
+        return;
+      }
 
       final camera = _isFrontCamera
           ? _cameras.firstWhere(
@@ -90,6 +111,7 @@ class _CameraViewState extends State<CameraView> {
 
       if (!mounted) return;
 
+      // [Fix #3] startImageStream dipanggil SETELAH embedding selesai di-load
       _controller!.startImageStream(_onCameraImage);
 
       setState(() {
@@ -97,7 +119,7 @@ class _CameraViewState extends State<CameraView> {
         _isInitializing = false;
       });
     } catch (e) {
-      setState(() => _isInitializing = false);
+      if (mounted) setState(() => _isInitializing = false);
     }
   }
 
@@ -112,6 +134,7 @@ class _CameraViewState extends State<CameraView> {
       setState(() {
         _isCameraActive = false;
         _overlayState = _OverlayState.neutral;
+        _lastResult = null;
       });
     }
     widget.onFaceValidChanged(false);
@@ -278,6 +301,12 @@ class _CameraViewState extends State<CameraView> {
     final hasBoundingBox =
         _lastResult?.boundingBox != null && !_imageLogicalSize.isEmpty;
 
+    // [Fix #5] Teks debug similarity — tampilkan nilai cosine similarity untuk fine-tuning
+    final debugSimilarity = _lastResult?.debugSimilarity;
+    final debugText = debugSimilarity != null
+        ? 'Kecocokan: ${(debugSimilarity * 100).toStringAsFixed(1)}%'
+        : null;
+
     return Stack(
       fit: StackFit.expand,
       children: [
@@ -306,21 +335,45 @@ class _CameraViewState extends State<CameraView> {
           left: 0,
           right: 0,
           child: Center(
-            child: Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              decoration: BoxDecoration(
-                color: Colors.black54,
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Text(
-                label,
-                style: TextStyle(
-                  color: frameColor,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // [Fix #5] Debug similarity score (di atas label status)
+                if (debugText != null)
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 6),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.black45,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      debugText,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                // Label status utama
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.black54,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    label,
+                    style: TextStyle(
+                      color: frameColor,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                 ),
-              ),
+              ],
             ),
           ),
         ),
@@ -340,16 +393,35 @@ class _CameraViewState extends State<CameraView> {
             color: Color(0xFF9CA3AF),
           ),
           const SizedBox(height: 12),
-          Text(
-            'Kamera tidak aktif',
-            style: TextStyle(
-              color: Color(0xFF6B7280),
-              fontSize: 14,
-            ),
-          ),
-          if (_isInitializing) ...[
-            const SizedBox(height: 12),
+          // [Fix #3] Tampilkan status loading embedding yang berbeda dari loading kamera
+          if (_isLoadingEmbeddings) ...[ 
             const CircularProgressIndicator(color: Color(0xFF22C55E)),
+            const SizedBox(height: 12),
+            const Text(
+              'Memuat data wajah...',
+              style: TextStyle(
+                color: Color(0xFF6B7280),
+                fontSize: 13,
+              ),
+            ),
+          ] else if (_isInitializing) ...[
+            const CircularProgressIndicator(color: Color(0xFF22C55E)),
+            const SizedBox(height: 12),
+            const Text(
+              'Menyiapkan kamera...',
+              style: TextStyle(
+                color: Color(0xFF6B7280),
+                fontSize: 13,
+              ),
+            ),
+          ] else ...[
+            const Text(
+              'Kamera tidak aktif',
+              style: TextStyle(
+                color: Color(0xFF6B7280),
+                fontSize: 14,
+              ),
+            ),
           ],
         ],
       ),

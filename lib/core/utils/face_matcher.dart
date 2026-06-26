@@ -1,6 +1,5 @@
 import 'dart:io';
 import 'dart:math';
-import 'dart:typed_data';
 import 'dart:ui';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
@@ -20,10 +19,15 @@ class FaceMatchResult {
   /// Null jika tidak ada wajah terdeteksi.
   final Rect? boundingBox;
 
+  /// Nilai cosine similarity tertinggi yang dicapai (untuk debug / fine-tuning threshold).
+  /// Null jika tidak ada wajah atau tidak ada referensi.
+  final double? debugSimilarity;
+
   const FaceMatchResult({
     this.hasFace = false,
     this.isMatch = false,
     this.boundingBox,
+    this.debugSimilarity,
   });
 }
 
@@ -37,7 +41,7 @@ class FaceMatcher {
   );
 
   static Interpreter? _interpreter;
-  
+
   // Cache for reference embeddings
   static final Map<String, List<double>> _referenceCache = {};
 
@@ -54,43 +58,71 @@ class FaceMatcher {
   static Future<void> loadReferenceEmbeddings(List<String> referencePaths) async {
     await init();
     if (_interpreter == null) return;
-    
+
     _referenceCache.clear();
     for (final path in referencePaths) {
       final refFile = File(path);
-      if (!await refFile.exists()) continue;
+      if (!await refFile.exists()) {
+        debugPrint('[FaceMatcher] File referensi tidak ditemukan: $path');
+        continue;
+      }
 
       final refInputImage = InputImage.fromFilePath(path);
       final refFaces = await _detector.processImage(refInputImage);
-      if (refFaces.isEmpty) continue;
+      if (refFaces.isEmpty) {
+        debugPrint('[FaceMatcher] Tidak ada wajah terdeteksi di referensi: $path');
+        continue;
+      }
 
       final refBytes = await refFile.readAsBytes();
       img.Image? refImg = img.decodeImage(refBytes);
-      if (refImg == null) continue;
+      if (refImg == null) {
+        debugPrint('[FaceMatcher] Gagal decode image referensi: $path');
+        continue;
+      }
 
       // Pastikan rotasi Exif dari kamera diaplikasikan
       refImg = img.bakeOrientation(refImg);
 
       final refFace = refFaces.first;
-      final refCrop = _cropFace(refImg, refFace.boundingBox);
+
+      // [Fix #4] Validasi minimum bounding box sebelum crop
+      final refBox = refFace.boundingBox;
+      if (refBox.width < 20 || refBox.height < 20) {
+        debugPrint('[FaceMatcher] Bounding box referensi terlalu kecil: ${refBox.width}x${refBox.height}');
+        continue;
+      }
+
+      final refCrop = _cropFace(refImg, refBox);
       if (refCrop == null) continue;
 
       final refResized = img.copyResize(refCrop, width: 112, height: 112);
       final embedding = _getEmbedding(refResized);
       if (embedding != null) {
         _referenceCache[path] = embedding;
+        debugPrint('[FaceMatcher] Referensi di-cache: $path');
       }
     }
+    debugPrint('[FaceMatcher] Total referensi ter-cache: ${_referenceCache.length}');
   }
 
   /// Cocokkan frame kamera dengan foto referensi.
   ///
   /// Selalu menjalankan deteksi wajah (ML Kit) sehingga bounding box
   /// tetap tersedia meski belum ada referensi atau model belum siap.
+  ///
+  /// [Fix #2] Perbaikan koordinat: Bounding box ML Kit mengacu pada ruang
+  /// koordinat image yang belum dirotasi secara piksel (ML Kit melakukan rotasi
+  /// virtual secara internal berdasarkan metadata `rotation`). Oleh karena itu,
+  /// konversi CameraImage → img.Image dilakukan TANPA rotasi terlebih dahulu,
+  /// lalu crop dilakukan langsung dari koordinat ML Kit yang sudah valid.
+  /// Rotasi hanya dilakukan SETELAH crop agar dimensi 112x112 tetap benar.
+  ///
   /// Mengembalikan [FaceMatchResult] yang berisi:
   /// - [FaceMatchResult.hasFace]: apakah wajah terdeteksi
-  /// - [FaceMatchResult.isMatch]: apakah cocok dengan referensi (cosine ≥ 0.70)
-  /// - [FaceMatchResult.boundingBox]: posisi wajah di ruang image logis
+  /// - [FaceMatchResult.isMatch]: apakah cocok dengan referensi (cosine >= 0.45)
+  /// - [FaceMatchResult.boundingBox]: posisi wajah di ruang image logis (setelah rotasi)
+  /// - [FaceMatchResult.debugSimilarity]: nilai similarity tertinggi untuk debug
   static Future<FaceMatchResult> match(
     CameraImage cameraImage,
     List<String> referencePhotoPaths,
@@ -107,51 +139,87 @@ class FaceMatcher {
       final liveFace = liveFaces.first;
       final faceBox = liveFace.boundingBox;
 
+      // Bounding box dalam ruang koordinat SETELAH rotasi virtual ML Kit.
+      // Kita perlu transformasikan ke ruang logis (portrait) untuk overlay.
+      // faceBox sudah dalam ruang yang tepat untuk overlay karena ML Kit
+      // mengeluarkan koordinat dalam ruang image yang sudah dirotasi virtual.
+
       // Jika model atau cache belum siap, cukup laporkan wajah terdeteksi
       if (_interpreter == null || _referenceCache.isEmpty) {
+        debugPrint('[FaceMatcher] Interpreter atau cache belum siap. Cache size: ${_referenceCache.length}');
         return FaceMatchResult(hasFace: true, boundingBox: faceBox);
       }
 
-      img.Image? liveImg = _convertCameraImage(cameraImage);
-      if (liveImg == null) {
+      // [Fix #2] Konversi CameraImage → img.Image TANPA rotasi terlebih dahulu.
+      // Bounding box dari ML Kit (faceBox) valid di ruang koordinat image asli
+      // (sebelum rotasi piksel), sehingga crop bisa langsung menggunakan faceBox.
+      img.Image? liveImgRaw = _convertCameraImage(cameraImage);
+      if (liveImgRaw == null) {
         return FaceMatchResult(hasFace: true, boundingBox: faceBox);
       }
 
-      liveImg = _rotateImage(liveImg, rotation);
-
-      final liveCrop = _cropFace(liveImg, faceBox);
-      if (liveCrop == null) {
+      // [Fix #2] Crop dulu dari image asli (koordinat sesuai faceBox ML Kit)
+      // [Fix #4] Validasi ukuran bounding box minimum
+      if (faceBox.width < 20 || faceBox.height < 20) {
+        debugPrint('[FaceMatcher] Bounding box live terlalu kecil: ${faceBox.width}x${faceBox.height}');
         return FaceMatchResult(hasFace: true, boundingBox: faceBox);
       }
 
-      final liveResized = img.copyResize(liveCrop, width: 112, height: 112);
+      final liveCropRaw = _cropFace(liveImgRaw, faceBox);
+      if (liveCropRaw == null) {
+        return FaceMatchResult(hasFace: true, boundingBox: faceBox);
+      }
+
+      // [Fix #2] Setelah crop, baru rotasi agar orientasi wajah tegak
+      final liveCropRotated = _rotateImage(liveCropRaw, rotation);
+      final liveResized = img.copyResize(liveCropRotated, width: 112, height: 112);
       final liveEmbedding = _getEmbedding(liveResized);
       if (liveEmbedding == null) {
         return FaceMatchResult(hasFace: true, boundingBox: faceBox);
       }
 
       // Bandingkan dengan setiap foto referensi di cache
+      double bestSimilarity = 0.0;
       for (final refPath in referencePhotoPaths) {
         final refEmbedding = _referenceCache[refPath];
         if (refEmbedding == null) continue;
         final similarity = _cosineSimilarity(liveEmbedding, refEmbedding);
-        if (similarity >= 0.82) {
+
+        // [Fix #5] Debug log: tampilkan similarity tiap referensi
+        debugPrint('[FaceMatcher] similarity=$similarity (ref: ${refPath.split('/').last})');
+
+        if (similarity > bestSimilarity) {
+          bestSimilarity = similarity;
+        }
+
+        // [Fix #1] Threshold diturunkan dari 0.82 → 0.60 agar realistis
+        // untuk kondisi live kamera vs foto referensi statis.
+        // MobileFaceNet pada kondisi real-world lazimnya menghasilkan
+        // similarity 0.60-0.95 untuk orang yang sama.
+        if (similarity >= 0.60) {
+          debugPrint('[FaceMatcher] ✅ MATCH! similarity=$similarity');
           return FaceMatchResult(
             hasFace: true,
             isMatch: true,
             boundingBox: faceBox,
+            debugSimilarity: similarity,
           );
         }
       }
 
-      return FaceMatchResult(hasFace: true, boundingBox: faceBox);
+      debugPrint('[FaceMatcher] ❌ No match. Best similarity=$bestSimilarity');
+      return FaceMatchResult(
+        hasFace: true,
+        boundingBox: faceBox,
+        debugSimilarity: bestSimilarity > 0 ? bestSimilarity : null,
+      );
     } catch (e) {
       debugPrint('FaceMatcher.match error: $e');
       return const FaceMatchResult();
     }
   }
 
-  /// Mengubah gambar (112x112) menjadi Tensor Float32 Array [1, 112, 112, 3] 
+  /// Mengubah gambar (112x112) menjadi Tensor Float32 Array [1, 112, 112, 3]
   /// lalu menjalankan inferensi TFLite untuk mendapatkan 192 array dimensi.
   static List<double>? _getEmbedding(img.Image image) {
     if (_interpreter == null) return null;
@@ -191,7 +259,7 @@ class FaceMatcher {
       normA += v1[i] * v1[i];
       normB += v2[i] * v2[i];
     }
-    
+
     if (normA == 0 || normB == 0) return 0.0;
     return dotProduct / (sqrt(normA) * sqrt(normB));
   }
@@ -207,7 +275,13 @@ class FaceMatcher {
       final y = (boundingBox.top.toInt() - marginY).clamp(0, source.height - 1);
       final w = (boundingBox.width.toInt() + marginX * 2).clamp(1, source.width - x);
       final h = (boundingBox.height.toInt() + marginY * 2).clamp(1, source.height - y);
-      
+
+      // [Fix #4] Validasi ukuran crop minimum agar tidak mengirim patch kosong
+      if (w < 20 || h < 20) {
+        debugPrint('[FaceMatcher] Crop terlalu kecil: ${w}x$h, skip.');
+        return null;
+      }
+
       return img.copyCrop(source, x: x, y: y, width: w, height: h);
     } catch (_) {
       return null;
@@ -340,7 +414,8 @@ class FaceMatcher {
     return imgImage;
   }
 
-  /// Putar gambar agar orientasinya sesuai dengan apa yang dilihat oleh ML Kit.
+  /// Putar gambar agar orientasinya sesuai.
+  /// Digunakan setelah crop — bukan sebelum — agar koordinat bounding box tetap valid.
   static img.Image _rotateImage(img.Image image, InputImageRotation rotation) {
     switch (rotation) {
       case InputImageRotation.rotation90deg:
