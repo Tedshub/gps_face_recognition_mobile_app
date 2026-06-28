@@ -25,7 +25,7 @@ class CameraView extends StatefulWidget {
   State<CameraView> createState() => _CameraViewState();
 }
 
-enum _OverlayState { neutral, noFace, noMatch, matched }
+enum _OverlayState { neutral, noFace, tooFar, badPose, noMatch, matched }
 
 class _CameraViewState extends State<CameraView> {
   CameraController? _controller;
@@ -168,6 +168,10 @@ class _CameraViewState extends State<CameraView> {
       final _OverlayState newState;
       if (result.isMatch) {
         newState = _OverlayState.matched;
+      } else if (result.isTooFar) {
+        newState = _OverlayState.tooFar;
+      } else if (!result.isPoseValid) {
+        newState = _OverlayState.badPose;
       } else if (result.hasFace) {
         newState = _OverlayState.noMatch;
       } else {
@@ -287,6 +291,14 @@ class _CameraViewState extends State<CameraView> {
       case _OverlayState.noMatch:
         frameColor = const Color(0xFFef4444);
         label = 'Wajah Tidak Cocok';
+        break;
+      case _OverlayState.tooFar:
+        frameColor = const Color(0xFFf59e0b);
+        label = 'Dekatkan wajah ke kamera';
+        break;
+      case _OverlayState.badPose:
+        frameColor = const Color(0xFFf59e0b);
+        label = 'Lihat lurus ke kamera';
         break;
       case _OverlayState.noFace:
         frameColor = const Color(0xFFf59e0b);

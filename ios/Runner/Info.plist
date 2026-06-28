@@ -45,5 +45,29 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+
+	<!-- Izin Privasi (Kamera & Lokasi) -->
+	<key>NSCameraUsageDescription</key>
+	<string>Aplikasi ini membutuhkan akses kamera untuk fitur deteksi wajah saat melakukan presensi.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Aplikasi membutuhkan akses lokasi untuk memastikan Anda berada dalam radius presensi yang diizinkan.</string>
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>Aplikasi membutuhkan akses lokasi untuk memastikan Anda berada dalam radius presensi yang diizinkan.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Aplikasi membutuhkan akses galeri jika Anda ingin mengunggah dokumen/foto pendukung.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Aplikasi membutuhkan akses mikrofon untuk menggunakan kamera pada fitur presensi wajah.</string>
+
+	<!-- Workmanager (Background Sync) Configuration -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+		<string>processing</string>
+	</array>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>presenceSyncTask</string>
+		<string>presenceSyncUnique</string>
+	</array>
 </dict>
 </plist>

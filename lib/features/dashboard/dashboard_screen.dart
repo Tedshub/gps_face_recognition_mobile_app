@@ -55,7 +55,6 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
 
   // Security
   bool _isSecurityCompromised = false;
-  String _securityMessage = '';
 
   @override
   void initState() {
@@ -63,7 +62,6 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
     WidgetsBinding.instance.addObserver(this);
     OfflineSync.setContext(context);
     OfflineSync.startListening();
-    _runSecurityCheck();
     _requestLocationAndStart();
 
     // Startup refresh — sync queue jika online, load cache jika offline.
@@ -72,13 +70,21 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
     );
   }
 
+  /// Menjalankan pengecekan keamanan.
+  /// PENTING: Fungsi ini HANYA dapat memblokir akses, TIDAK pernah membuka kunci.
+  /// Sekali terblokir, hanya restart aplikasi yang dapat mengubahnya.
   Future<void> _runSecurityCheck() async {
+    // Jika sudah terblokir, tidak perlu cek ulang.
+    if (_isSecurityCompromised) return;
+
     final status = await SecurityChecker.checkDeviceSecurity();
     if (!status.isSafe && mounted) {
-      setState(() {
-        _isSecurityCompromised = true;
-        _securityMessage = status.message;
-      });
+      _isSecurityCompromised = true;
+      // Hentikan location stream karena sudah terblokir.
+      _locationSub?.cancel();
+      _locationSub = null;
+      // Navigasi ke layar blokir terpisah.
+      context.go('/security-blocked');
     }
   }
 
@@ -96,6 +102,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       OfflineSync.syncNow();
+      // Jalankan pengecekan keamanan setiap kali app kembali ke foreground.
+      // Ini memastikan fake GPS yang diaktifkan saat app di background terdeteksi.
+      _runSecurityCheck();
     }
   }
 
@@ -158,15 +167,45 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
     } catch (_) {}
   }
 
+  void _triggerSecurityBlock() {
+    if (_isSecurityCompromised) return;
+    _isSecurityCompromised = true;
+    _locationSub?.cancel();
+    _locationSub = null;
+    if (mounted) {
+      context.go('/security-blocked');
+    }
+  }
+
   void _initStreamOnly() {
     _locationSub?.cancel();
     try {
+      // 1. Cek posisi terakhir diketahui secara cepat
       Geolocator.getLastKnownPosition().then((pos) {
         if (pos != null && mounted) {
-          setState(() => _lastPosition = pos);
+          if (pos.isMocked) {
+            _triggerSecurityBlock();
+          } else {
+            setState(() => _lastPosition = pos);
+          }
         }
       }).catchError((_) {});
 
+      // 2. Active Fetching: Tarik data terbaru secara paksa (mengatasi masalah stream yang tidak jalan karena distanceFilter 5m)
+      Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+        timeLimit: const Duration(seconds: 3),
+      ).then((pos) {
+        if (mounted) {
+          if (pos.isMocked) {
+            _triggerSecurityBlock();
+          } else {
+            setState(() => _lastPosition = pos);
+          }
+        }
+      }).catchError((_) {});
+
+      // 3. Listen ke stream untuk update secara berkelanjutan
       _locationSub = Geolocator.getPositionStream(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.high,
@@ -175,21 +214,19 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
       ).listen((position) {
         if (mounted) {
           if (position.isMocked) {
-            setState(() {
-              _isSecurityCompromised = true;
-              _securityMessage = 'Kecurangan GPS terdeteksi. Aplikasi tidak dapat digunakan.';
-            });
-          } else {
+            _triggerSecurityBlock();
+          } else if (!_isSecurityCompromised) {
             setState(() {
               _lastPosition = position;
             });
           }
         }
       }, onError: (error) {
-        // Abaikan error stream
+        debugPrint('Location stream error: $error');
       });
     } catch (_) {}
   }
+
 
   Future<void> _handleRefresh() async {
     final result = await ref.read(dashboardProvider.notifier).refresh();
@@ -221,7 +258,21 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
     final officeLon = (office['longitude'] as num).toDouble();
     final officeRadius = (office['radius'] as num).toDouble();
 
-    // Koordinat GPS aktual
+    // Lakukan satu kali lagi tarikan agresif untuk mengecek GPS Fake sesaat sebelum proses pengiriman
+    try {
+      final forcedPos = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+        timeLimit: const Duration(seconds: 3),
+      );
+      if (forcedPos.isMocked) {
+        _triggerSecurityBlock();
+        return;
+      }
+    } catch (_) {
+      // Abaikan error timeout/dll, biarkan sistem fallback menggunakan _lastPosition
+    }
+
+    // Koordinat GPS aktual (bisa dari stream atau dari forcedPos jika stream tidak jalan)
     final lat = _lastPosition?.latitude ?? 0.0;
     final lng = _lastPosition?.longitude ?? 0.0;
 
@@ -230,6 +281,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
 
     // Validasi lokasi di device (offline maupun online)
     if (!isWithinRadius) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -245,6 +297,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
 
     // Validasi wajah
     if (!_isFaceValid) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Validasi wajah gagal. Arahkan wajah ke kamera.'),
@@ -532,63 +585,6 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
 
   @override
   Widget build(BuildContext context) {
-    if (_isSecurityCompromised) {
-      return Scaffold(
-        backgroundColor: Colors.white,
-        appBar: AppBar(
-          backgroundColor: Colors.white,
-          title: const Text('Keamanan Sistem',
-              style: TextStyle(
-                  color: Color(0xFF1F2937), fontWeight: FontWeight.bold)),
-          elevation: 0,
-        ),
-        body: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24.0),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Icon(Icons.gpp_bad_outlined,
-                    size: 80, color: Color(0xFFEF4444)),
-                const SizedBox(height: 24),
-                const Text(
-                  'Akses Ditolak',
-                  style: TextStyle(
-                      color: Color(0xFF1F2937),
-                      fontSize: 24,
-                      fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  _securityMessage.isNotEmpty
-                      ? _securityMessage
-                      : 'Kecurangan GPS/Sistem terdeteksi, anda tidak dapat mengakses aplikasi ini.',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: Color(0xFF6B7280), fontSize: 16, height: 1.5),
-                ),
-                const SizedBox(height: 32),
-                ElevatedButton.icon(
-                  onPressed: () {
-                    setState(() {
-                      _isSecurityCompromised = false;
-                    });
-                    _runSecurityCheck();
-                  },
-                  icon: const Icon(Icons.refresh),
-                  label: const Text('Periksa Ulang Keamanan'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF1F2937),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      );
-    }
-
     final auth = ref.watch(authProvider);
     final isAuth = auth.status == AuthStatus.authenticated;
 
@@ -634,6 +630,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
     }
 
     // Presensi diizinkan jika wajah cocok dan dalam radius (validasi lokal)
+    // ignore: unused_local_variable
     final canPresence = _isFaceValid && isWithinRadius;
 
     // Restart stream jika office baru tersedia setelah loading

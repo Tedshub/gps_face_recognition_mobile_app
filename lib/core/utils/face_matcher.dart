@@ -15,6 +15,12 @@ class FaceMatchResult {
   /// Apakah wajah yang terdeteksi cocok dengan foto referensi.
   final bool isMatch;
 
+  /// Apakah wajah terlalu jauh dari kamera
+  final bool isTooFar;
+
+  /// Apakah pose wajah valid (lihat lurus)
+  final bool isPoseValid;
+
   /// Bounding box wajah dalam ruang koordinat image logis (sudah dirotasi).
   /// Null jika tidak ada wajah terdeteksi.
   final Rect? boundingBox;
@@ -26,6 +32,8 @@ class FaceMatchResult {
   const FaceMatchResult({
     this.hasFace = false,
     this.isMatch = false,
+    this.isTooFar = false,
+    this.isPoseValid = true,
     this.boundingBox,
     this.debugSimilarity,
   });
@@ -139,15 +147,48 @@ class FaceMatcher {
       final liveFace = liveFaces.first;
       final faceBox = liveFace.boundingBox;
 
-      // Bounding box dalam ruang koordinat SETELAH rotasi virtual ML Kit.
-      // Kita perlu transformasikan ke ruang logis (portrait) untuk overlay.
-      // faceBox sudah dalam ruang yang tepat untuk overlay karena ML Kit
-      // mengeluarkan koordinat dalam ruang image yang sudah dirotasi virtual.
+      // [Fix #6] Validasi jarak wajah dan pose (Sesuai dengan FACE-CAPTURE.md)
+      // Jarak wajah ideal: Bounding box harus memakan area yang cukup.
+      // Di capture diset >= 35%, di presensi/attendance diberikan toleransi sedikit (>= 25%).
+      final imageArea = cameraImage.width * cameraImage.height;
+      final faceArea = faceBox.width * faceBox.height;
+      final faceRatio = faceArea / imageArea;
+      
+      final bool isTooFar = faceRatio < 0.25;
 
-      // Jika model atau cache belum siap, cukup laporkan wajah terdeteksi
+      // Pose (Tahap 1: lihat lurus ke kamera)
+      // Toleransi Yaw +/- 20, Pitch +/- 15, Roll +/- 15
+      bool isPoseValid = true;
+      if (liveFace.headEulerAngleY != null && liveFace.headEulerAngleY!.abs() > 20) {
+        isPoseValid = false;
+      }
+      if (liveFace.headEulerAngleX != null && liveFace.headEulerAngleX!.abs() > 15) {
+        isPoseValid = false;
+      }
+      if (liveFace.headEulerAngleZ != null && liveFace.headEulerAngleZ!.abs() > 15) {
+        isPoseValid = false;
+      }
+
+      // Jika model atau cache belum siap, kembalikan status terdeteksi
       if (_interpreter == null || _referenceCache.isEmpty) {
         debugPrint('[FaceMatcher] Interpreter atau cache belum siap. Cache size: ${_referenceCache.length}');
-        return FaceMatchResult(hasFace: true, boundingBox: faceBox);
+        return FaceMatchResult(
+          hasFace: true, 
+          isTooFar: isTooFar,
+          isPoseValid: isPoseValid,
+          boundingBox: faceBox
+        );
+      }
+      
+      // Jika wajah terlalu jauh atau pose tidak valid, jangan lakukan komputasi embedding (hemat CPU dan hindari false match)
+      if (isTooFar || !isPoseValid) {
+        debugPrint('[FaceMatcher] Wajah belum valid: isTooFar=$isTooFar, isPoseValid=$isPoseValid');
+        return FaceMatchResult(
+          hasFace: true,
+          isTooFar: isTooFar,
+          isPoseValid: isPoseValid,
+          boundingBox: faceBox,
+        );
       }
 
       // [Fix #2] Konversi CameraImage → img.Image TANPA rotasi terlebih dahulu.
@@ -300,6 +341,21 @@ class FaceMatcher {
     InputImageRotation rotation,
   ) {
     try {
+      if (Platform.isIOS || image.format.group == ImageFormatGroup.bgra8888) {
+        // Pada iOS format default adalah bgra8888 (1 plane).
+        if (image.planes.isEmpty) return null;
+        return InputImage.fromBytes(
+          bytes: image.planes[0].bytes,
+          metadata: InputImageMetadata(
+            size: Size(image.width.toDouble(), image.height.toDouble()),
+            rotation: rotation,
+            format: InputImageFormat.bgra8888,
+            bytesPerRow: image.planes[0].bytesPerRow,
+          ),
+        );
+      }
+
+      // Android: YUV_420_888
       if (image.planes.length < 3) return null;
       final Uint8List nv21 = _yuv420ToNv21(image);
 

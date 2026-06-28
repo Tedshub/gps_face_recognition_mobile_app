@@ -5,10 +5,12 @@ import '../features/dashboard/dashboard_screen.dart';
 import '../features/history/history_screen.dart';
 import '../features/profile/profile_screen.dart';
 import '../features/dashboard/presence_guide_screen.dart';
+import '../features/dashboard/security_blocked_screen.dart';
 
 import '../features/auth/auth_notifier.dart';
 import '../features/auth/login_screen.dart';
 import '../features/onboarding/onboarding_screen.dart';
+import '../features/onboarding/splash_screen.dart';
 
 /// GoRouter konfigurasi dengan ShellRoute untuk bottom tab navigation.
 ///
@@ -20,7 +22,7 @@ import '../features/onboarding/onboarding_screen.dart';
 ///     /profile          -- ProfileScreen (tab 2)
 final routerProvider = Provider<GoRouter>((ref) {
   final router = GoRouter(
-    initialLocation: '/dashboard',
+    initialLocation: '/splash',
     redirect: (context, state) {
       final authState = ref.read(authProvider);
       final isAuth = authState.status == AuthStatus.authenticated;
@@ -29,6 +31,11 @@ final routerProvider = Provider<GoRouter>((ref) {
       final path = state.uri.path;
       final isGoingToLogin = path == '/login';
       final isGoingToOnboarding = path == '/onboarding';
+      final isGoingToSplash = path == '/splash';
+      final isGoingToBlocked = path == '/security-blocked';
+
+      // Biarkan splash dan security-blocked bebas diakses kapan saja.
+      if (isGoingToSplash || isGoingToBlocked) return null;
 
       if (isUnauth && !isGoingToLogin && !isGoingToOnboarding) {
         return '/onboarding';
@@ -41,6 +48,10 @@ final routerProvider = Provider<GoRouter>((ref) {
       return null;
     },
     routes: [
+      GoRoute(
+        path: '/splash',
+        builder: (context, state) => const SplashScreen(),
+      ),
       GoRoute(
         path: '/login',
         builder: (context, state) => const LoginScreen(),
@@ -69,6 +80,11 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/presence-guide',
         builder: (context, state) => const PresenceGuideScreen(),
+      ),
+      // Route blokir keamanan — di luar ShellRoute agar full-screen tanpa bottom nav.
+      GoRoute(
+        path: '/security-blocked',
+        builder: (context, state) => const SecurityBlockedScreen(),
       ),
     ],
   );
