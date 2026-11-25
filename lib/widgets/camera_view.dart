@@ -16,9 +16,19 @@ import '../core/utils/face_matcher.dart';
 class CameraView extends StatefulWidget {
   final void Function(bool isValid) onFaceValidChanged;
 
+  /// Jika true, kamera langsung diaktifkan saat widget pertama kali muncul
+  /// tanpa perlu user menekan tombol.
+  final bool autoStart;
+
+  /// Callback yang dipanggil saat user menekan tombol "Batal".
+  /// Gunakan ini untuk menyembunyikan frame kamera dari parent widget.
+  final VoidCallback? onCancel;
+
   const CameraView({
     super.key,
     required this.onFaceValidChanged,
+    this.autoStart = false,
+    this.onCancel,
   });
 
   @override
@@ -54,6 +64,11 @@ class _CameraViewState extends State<CameraView> {
     super.initState();
     // [Fix #3] Load paths saat init — tidak menunggu embedding selesai
     // agar UI tidak terblokir. Embedding akan selesai sebelum kamera aktif.
+    // Jika autoStart, langsung tandai sedang loading agar placeholder
+    // menampilkan 'Memuat data wajah...' bukan 'Kamera tidak aktif'.
+    if (widget.autoStart) {
+      _isLoadingEmbeddings = true;
+    }
     _loadReferencePaths();
   }
 
@@ -65,6 +80,11 @@ class _CameraViewState extends State<CameraView> {
     _referencePhotoPaths = await UserStorage.getFacePhotosPaths();
     // Pra-load embedding di background — hasilnya akan siap saat kamera diaktifkan
     await FaceMatcher.loadReferenceEmbeddings(_referencePhotoPaths);
+    // Jika autoStart aktif, langsung inisialisasi kamera setelah embedding selesai
+    if (widget.autoStart && mounted) {
+      setState(() => _isLoadingEmbeddings = false);
+      _initCamera();
+    }
   }
 
   Future<void> _initCamera() async {
@@ -233,24 +253,21 @@ class _CameraViewState extends State<CameraView> {
                     icon: const Icon(Icons.flip_camera_ios, color: Color(0xFF6B7280)),
                     tooltip: 'Ganti Kamera',
                   ),
-                // Toggle aktif/nonaktif
+                // Tombol Batal — menghentikan kamera dan memberi tahu parent
                 TextButton.icon(
                   onPressed: _isInitializing
                       ? null
                       : () async {
-                          if (_isCameraActive) {
-                            await _stopCamera();
-                          } else {
-                            await _initCamera();
-                          }
+                          await _stopCamera();
+                          widget.onCancel?.call();
                         },
-                  icon: Icon(
-                    _isCameraActive ? Icons.videocam_off : Icons.videocam,
+                  icon: const Icon(
+                    Icons.cancel_outlined,
                     size: 18,
                   ),
-                  label: Text(_isCameraActive ? 'Matikan' : 'Aktifkan'),
+                  label: const Text('Batal'),
                   style: TextButton.styleFrom(
-                    foregroundColor: const Color(0xFF22C55E),
+                    foregroundColor: const Color(0xFFEF4444),
                   ),
                 ),
               ],

@@ -13,13 +13,17 @@ import '../storage/local_db_helper.dart';
 ///
 /// Gunakan [DioClient.instance] di seluruh app.
 class DioClient {
-  static const String baseUrl = 'https://presensimayong.dssrks.co.id/api';
+  static const String baseUrl = 'https://presensimayong.my.id/api';
 
   static Dio? _instance;
 
   /// Callback yang dipanggil saat 401 diterima (navigate ke /login).
   /// Set di main.dart setelah GoRouter siap.
   static void Function()? onUnauthorized;
+
+  /// Flag untuk mencegah logout dipanggil berkali-kali jika ada
+  /// beberapa request paralel yang semua return 401 bersamaan.
+  static bool _isHandling401 = false;
 
   static Dio get instance {
     _instance ??= _createDio();
@@ -31,7 +35,8 @@ class DioClient {
       BaseOptions(
         baseUrl: baseUrl,
         connectTimeout: const Duration(seconds: 15),
-        receiveTimeout: const Duration(seconds: 30),
+        sendTimeout: const Duration(seconds: 15),
+        receiveTimeout: const Duration(seconds: 20),
         headers: {
           'Accept': 'application/json',
           // Content-Type sengaja TIDAK di-set di sini agar Dio otomatis
@@ -45,9 +50,11 @@ class DioClient {
     dio.interceptors.add(
       InterceptorsWrapper(
         onRequest: (options, handler) async {
-          final token = await AuthStorage.getToken();
-          if (token != null && token.isNotEmpty) {
-            options.headers['Authorization'] = 'Bearer $token';
+          if (!options.path.contains('/auth/login')) {
+            final token = await AuthStorage.getToken();
+            if (token != null && token.isNotEmpty) {
+              options.headers['Authorization'] = 'Bearer $token';
+            }
           }
 
           // Offline Cache Logic for GET requests
@@ -102,12 +109,21 @@ class DioClient {
           }
 
           if (err.response?.statusCode == 401) {
-            // Cegah infinite loop: jangan panggil onUnauthorized jika error 401 
+            // Cegah infinite loop: jangan panggil onUnauthorized jika error 401
             // berasal dari endpoint login atau logout itu sendiri.
             final path = err.requestOptions.path;
             if (!path.contains('/auth/login') && !path.contains('/auth/logout')) {
-              await AuthStorage.deleteToken();
-              onUnauthorized?.call();
+              // Cegah race condition: jika sudah ada request 401 yang sedang
+              // diproses (dari request paralel), jangan logout dua kali.
+              if (!_isHandling401) {
+                _isHandling401 = true;
+                await AuthStorage.deleteToken();
+                onUnauthorized?.call();
+                // Reset flag setelah sedikit delay agar flow logout selesai
+                Future.delayed(const Duration(seconds: 3), () {
+                  _isHandling401 = false;
+                });
+              }
             }
           }
           return handler.next(err);

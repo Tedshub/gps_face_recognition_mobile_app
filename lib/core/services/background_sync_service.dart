@@ -21,7 +21,7 @@ import '../storage/presence_queue.dart';
 //  - HTTP request dibuat manual dengan dart:io HttpClient
 // ===========================================================================
 
-const String _baseUrl = 'https://presensimayong.dssrks.co.id/api';
+const String _baseUrl = 'https://presensimayong.my.id/api';
 const String _syncEndpoint = '$_baseUrl/employee/presences/offline-sync';
 
 /// Dispatcher yang dipanggil Workmanager saat task background berjalan.

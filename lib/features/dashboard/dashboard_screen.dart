@@ -50,6 +50,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
   String? _dokumenPath;
   String? _dokumenName;
   bool _showCheckoutCamera = false;
+  bool _showCheckinCamera = false;
   bool _isSubmittingIzin = false;
   bool _isSubmittingPresence = false;
 
@@ -455,6 +456,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
         setState(() {
           _isSubmittingPresence = false;
           _showCheckoutCamera = false; // Sembunyikan kamera setelah submit
+          _showCheckinCamera = false;  // Reset kamera check-in juga
         });
       }
     }
@@ -919,12 +921,71 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
 
                   // Camera (hidden if izin, sudah check-out, atau presensi ditutup)
                   if (!isIzin && !isCheckedOut && isPresenceOpen) ...[
-                    if (todayPresence == null || _showCheckoutCamera) ...[
+                    // ── CHECK-IN ──
+                    if (todayPresence == null) ...[
+                      if (!_showCheckinCamera) ...[
+                        // Tombol untuk mengaktifkan kamera check-in
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                          child: ElevatedButton.icon(
+                            onPressed: () => setState(() => _showCheckinCamera = true),
+                            icon: const Icon(Icons.camera_alt),
+                            label: const Text('Klik untuk Presensi Masuk'),
+                            style: ElevatedButton.styleFrom(
+                              minimumSize: const Size(double.infinity, 52),
+                              backgroundColor: const Color(0xFF22C55E),
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ] else ...[
+                        // Frame kamera check-in — autoStart langsung aktifkan kamera
+                        CameraView(
+                          autoStart: true,
+                          onCancel: () => setState(() {
+                            _showCheckinCamera = false;
+                            _isFaceValid = false;
+                          }),
+                          onFaceValidChanged: (valid) {
+                            setState(() => _isFaceValid = valid);
+                            if (valid && isWithinRadius && !_isSubmittingPresence && !_locationPermissionDenied) {
+                              _handlePresence();
+                            }
+                          },
+                        ),
+
+                        // Info validasi
+                        Padding(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 8),
+                          child: Center(
+                            child: Text(
+                              _buildValidationHint(
+                                  isOnline: true, isWithinRadius: isWithinRadius),
+                              style: const TextStyle(
+                                color: Color(0xFF9CA3AF),
+                                fontSize: 12,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ]
+                    // ── CHECK-OUT ──
+                    else if (_showCheckoutCamera) ...[
+                      // Frame kamera check-out — autoStart langsung aktifkan kamera
                       CameraView(
+                        autoStart: true,
+                        onCancel: () => setState(() {
+                          _showCheckoutCamera = false;
+                          _isFaceValid = false;
+                        }),
                         onFaceValidChanged: (valid) {
                           setState(() => _isFaceValid = valid);
-
-                          // Otomatis submit jika valid, dalam radius, dan belum proses submit
                           if (valid && isWithinRadius && !_isSubmittingPresence && !_locationPermissionDenied) {
                             _handlePresence();
                           }
@@ -952,7 +1013,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                         child: ElevatedButton.icon(
-                          onPressed: () => setState(() => _showCheckoutCamera = true),
+                          onPressed: () => _showCheckoutConfirmation(context),
                           icon: const Icon(Icons.camera_alt),
                           label: const Text('Buka Kamera untuk Presensi Pulang'),
                           style: ElevatedButton.styleFrom(
@@ -963,6 +1024,54 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
                         ),
                       ),
                     ],
+                  ] else if (isIzin) ...[
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+                      child: Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF0FDF4),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: const Color(0xFF22C55E).withValues(alpha: 0.3)),
+                        ),
+                        child: const Center(
+                          child: Text(
+                            'Terimakasih telah mengajukan izin hari ini, sampai jumpa lagi di esok hari.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: Color(0xFF16A34A),
+                              fontSize: 14,
+                              fontWeight: FontWeight.w500,
+                              height: 1.5,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ] else if (isCheckedOut) ...[
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+                      child: Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF0FDF4),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: const Color(0xFF22C55E).withValues(alpha: 0.3)),
+                        ),
+                        child: const Center(
+                          child: Text(
+                            'Terimakasih telah melakukan seluruh presensi hari ini, sampai jumpa lagi di hari esok.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: Color(0xFF16A34A),
+                              fontSize: 14,
+                              fontWeight: FontWeight.w500,
+                              height: 1.5,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
                   ],
 
 
@@ -1070,10 +1179,23 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
             if (presence['check_out_time'] != null)
               Padding(
                 padding: const EdgeInsets.only(top: 4),
-                child: Text(
-                  'Pulang: ${_formatTime(presence['check_out_time'])}',
-                  style: const TextStyle(
-                      color: Color(0xFF6B7280), fontSize: 13),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Pulang: ${_formatTime(presence['check_out_time'])}',
+                        style: const TextStyle(
+                            color: Color(0xFF6B7280), fontSize: 13),
+                      ),
+                    ),
+                    StatusBadge(
+                      status: (presence['early_leave'] == true ||
+                              presence['early_leave'] == 1 ||
+                              presence['early_leave'] == '1')
+                          ? 'early_leave'
+                          : 'present',
+                    ),
+                  ],
                 ),
               )
             else
@@ -1460,6 +1582,76 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
           ),
         ],
       ),
+    );
+  }
+
+  /// Tampilkan modal konfirmasi sebelum user membuka kamera check-out.
+  /// Mencegah user tidak sengaja melakukan presensi pulang setelah check-in.
+  void _showCheckoutConfirmation(BuildContext context) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return AlertDialog(
+          backgroundColor: Colors.white,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          title: const Row(
+            children: [
+              Icon(Icons.logout, color: Color(0xFF3B82F6), size: 24),
+              SizedBox(width: 8),
+              Text(
+                'Konfirmasi Presensi Pulang',
+                style: TextStyle(
+                  color: Color(0xFF1F2937),
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          content: const Text(
+            'Anda sudah melakukan presensi masuk, apakah anda ingin melanjutkan untuk melakukan presensi pulang?',
+            style: TextStyle(
+              color: Color(0xFF374151),
+              fontSize: 14,
+              height: 1.5,
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              style: TextButton.styleFrom(
+                foregroundColor: const Color(0xFF6B7280),
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+              ),
+              child: const Text(
+                'Tidak',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                setState(() => _showCheckoutCamera = true);
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF22C55E),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+              ),
+              child: const Text(
+                'Ya',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 

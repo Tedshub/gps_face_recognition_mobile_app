@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -70,7 +71,8 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
     try {
       debugPrint('[AUTH] Mencoba login NIP=$nip...');
-      final response = await AuthApi.login(nip, password);
+      final response = await AuthApi.login(nip, password)
+          .timeout(const Duration(seconds: 20));
       debugPrint('[AUTH] Response status: ${response.statusCode}');
 
       final data = response.data['data'];
@@ -105,15 +107,28 @@ class AuthNotifier extends StateNotifier<AuthState> {
           msg = e.response?.data['message'] ?? msg;
         }
       } else if (e.response?.statusCode == 403) {
-        msg = 'Akses ditolak. Hanya karyawan yang dapat login.';
+        msg = (e.response?.data?['message'] as String?) ??
+            'Akses ditolak. Hanya karyawan dan admin desa yang dapat login.';
       } else if (e.type == DioExceptionType.connectionError ||
-          e.type == DioExceptionType.connectionTimeout) {
-        msg = 'Tidak dapat terhubung ke server';
+          e.type == DioExceptionType.connectionTimeout ||
+          e.type == DioExceptionType.sendTimeout ||
+          e.type == DioExceptionType.receiveTimeout) {
+        msg = 'Koneksi ke server gagal atau timeout. Periksa internet Anda.';
+      } else if (e.response?.data is Map && e.response?.data['message'] != null) {
+        msg = e.response!.data['message'].toString();
+      } else if (e.message != null) {
+        msg = 'Gagal terhubung: ${e.message}';
       }
 
       state = state.copyWith(
         isLoading: false,
         errorMessage: msg,
+      );
+    } on TimeoutException {
+      state = state.copyWith(
+        isLoading: false,
+        errorMessage:
+            'Waktu koneksi habis (timeout). Pastikan HP terhubung ke internet.',
       );
     } catch (e, st) {
       debugPrint('[AUTH] Catch error: $e');
