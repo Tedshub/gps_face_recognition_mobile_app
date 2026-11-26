@@ -57,7 +57,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
     }
   }
 
-  /// Login dengan NIP dan password.
+  /// Login dengan NIK (field backend: nip) dan password.
   ///
   /// Alur:
   /// 1. POST /auth/login → dapatkan token + data user dasar
@@ -66,11 +66,11 @@ class AuthNotifier extends StateNotifier<AuthState> {
   ///    koordinat kantor (office) dan face_photos
   /// 4. Simpan data lengkap ke UserStorage
   /// 5. Download semua foto wajah ke penyimpanan lokal device
-  Future<void> login(int nip, String password) async {
+  Future<void> login(String nip, String password) async {
     state = state.copyWith(isLoading: true, errorMessage: null);
 
     try {
-      debugPrint('[AUTH] Mencoba login NIP=$nip...');
+      debugPrint('[AUTH] Mencoba login NIK=$nip...');
       final response = await AuthApi.login(nip, password)
           .timeout(const Duration(seconds: 20));
       debugPrint('[AUTH] Response status: ${response.statusCode}');

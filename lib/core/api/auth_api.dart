@@ -5,10 +5,10 @@ import 'dio_client.dart';
 class AuthApi {
   static Dio get _dio => DioClient.instance;
 
-  /// Login dengan NIP dan password.
-  /// Request: { "nip": int, "password": string }
+  /// Login dengan NIK (field backend: nip) dan password.
+  /// Request: { "nip": string (16 digits), "password": string }
   /// Response: { "data": { "token": string, "user": {..., "office": {...} } } }
-  static Future<Response> login(int nip, String password) async {
+  static Future<Response> login(String nip, String password) async {
     return await _dio.post(
       '/auth/login',
       data: {'nip': nip, 'password': password},

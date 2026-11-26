@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'auth_notifier.dart';
 
-/// Layar login: form NIP + password dengan validasi dan loading state.
+/// Layar login: form NIK + password dengan validasi 16 digit dan loading state.
 /// Rute: /login (standalone, tanpa bottom navigation)
 class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
@@ -29,9 +30,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     setState(() => _nipError = null);
     if (!_formKey.currentState!.validate()) return;
 
-    final nip = int.tryParse(_nipController.text.trim());
-    if (nip == null) {
-      setState(() => _nipError = 'NIP harus berupa angka');
+    final nip = _nipController.text.trim();
+    if (!RegExp(r'^\d{16}$').hasMatch(nip)) {
+      setState(() => _nipError = 'NIK harus terdiri dari 16 digit angka');
       return;
     }
 
@@ -108,30 +109,50 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // NIP field
-                      _buildLabel('NIP'),
+                      // NIK field
+                      _buildLabel('NIK'),
                       const SizedBox(height: 6),
                       TextFormField(
                         controller: _nipController,
                         keyboardType: TextInputType.number,
+                        inputFormatters: [
+                          FilteringTextInputFormatter.digitsOnly,
+                          LengthLimitingTextInputFormatter(16),
+                        ],
                         style: const TextStyle(color: Color(0xFF1F2937)),
                         decoration: _inputDecoration(
-                          hint: 'Masukkan NIP Anda',
+                          hint: 'Masukkan 16 digit NIK Anda',
                           icon: Icons.badge_outlined,
                           errorText: _nipError,
                         ),
                         validator: (v) {
-                          if (v == null || v.trim().isEmpty) {
-                            return 'NIP tidak boleh kosong';
+                          final trimmed = v?.trim() ?? '';
+                          if (trimmed.isEmpty) {
+                            return 'NIK tidak boleh kosong';
+                          }
+                          if (!RegExp(r'^\d{16}$').hasMatch(trimmed)) {
+                            return 'NIK harus terdiri dari 16 digit angka';
                           }
                           return null;
                         },
                         onChanged: (_) {
-                          if (_nipError != null) {
-                            setState(() => _nipError = null);
-                          }
+                          setState(() {
+                            if (_nipError != null) _nipError = null;
+                          });
                         },
                       ),
+                      if (_nipController.text.isNotEmpty &&
+                          _nipController.text.length < 16 &&
+                          _nipError == null) ...[
+                        const SizedBox(height: 6),
+                        Text(
+                          '*NIK tidak valid (wajib 16 digit angka, ${_nipController.text.length}/16)',
+                          style: const TextStyle(
+                            color: Color(0xFFD97706),
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
                       if (_nipError != null) ...[
                         const SizedBox(height: 6),
                         Text(

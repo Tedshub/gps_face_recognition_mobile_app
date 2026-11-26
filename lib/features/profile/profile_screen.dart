@@ -152,7 +152,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                   ),
                 ),
                 Text(
-                  'NIP: ${user['nip'] ?? '-'}',
+                  'NIK: ${user['nip'] ?? '-'}',
                   style: TextStyle(
                     color: Color(0xFF6B7280),
                     fontSize: 13,
