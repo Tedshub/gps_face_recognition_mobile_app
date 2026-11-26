@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -30,14 +31,16 @@ class DocCache {
       final ext = url.split('.').last.split('?').first;
       final localPath = '${dir.path}/$presenceId.$ext';
 
-      await dio.download(url, localPath);
+      await dio
+          .download(url, localPath)
+          .timeout(const Duration(seconds: 15));
 
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(_key(presenceId), localPath);
       return localPath;
     } catch (e, stack) {
-      print('DocCache download error: $e\n$stack');
-      rethrow;
+      debugPrint('DocCache download error: $e\n$stack');
+      return null; // Jangan rethrow — biarkan background cache gagal secara diam-diam
     }
   }
 

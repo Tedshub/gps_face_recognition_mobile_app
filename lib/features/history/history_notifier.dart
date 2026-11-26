@@ -61,79 +61,121 @@ class HistoryNotifier extends StateNotifier<HistoryState> {
   Future<void> loadHistory({bool forceRefresh = false}) async {
     state = state.copyWith(isLoading: true, clearError: true);
 
-    final year = state.year;
-    final month = state.month;
-    final isOnline = await OfflineSync.isConnected();
+    try {
+      final year = state.year;
+      final month = state.month;
+      final isOnline = await OfflineSync.isConnected();
 
-    // Gunakan cache jika fresh dan tidak forceRefresh
-    if (!forceRefresh && await HistoryCache.isFresh(year, month) && isOnline) {
-      final cached = await HistoryCache.load(year, month);
-      if (cached != null) {
-        _applyData(cached);
-        state = state.copyWith(isLoading: false);
-        return;
-      }
-    }
-
-    if (isOnline) {
-      try {
-        final response = await EmployeeApi.getPresencesHistory(month, year);
-        final data = response.data['data'] as Map<String, dynamic>;
-        await HistoryCache.save(year, month, data);
-        _applyData(data);
-
-        // Pre-download dokumen izin
-        await _cacheIzinDocuments();
-
-        state = state.copyWith(isLoading: false);
-      } on DioException catch (_) {
-        // Fallback ke cache
-        final cached = await HistoryCache.load(year, month);
-        if (cached != null) {
-          _applyData(cached);
+      // Gunakan cache jika fresh dan tidak forceRefresh
+      if (!forceRefresh && await HistoryCache.isFresh(year, month) && isOnline) {
+        try {
+          final cached = await HistoryCache.load(year, month);
+          if (cached != null) {
+            _applyData(cached);
+            state = state.copyWith(isLoading: false);
+            return;
+          }
+        } catch (_) {
+          // Abaikan cache yang rusak/usang, lanjut ambil dari API
         }
-        state = state.copyWith(
-          isLoading: false,
-          errorMessage: 'Anda sedang offline — tidak dapat memuat data terbaru',
-        );
       }
-    } else {
-      // Offline: load dari cache
-      final cached = await HistoryCache.load(year, month);
-      if (cached != null) {
-        _applyData(cached);
+
+      if (isOnline) {
+        try {
+          final response = await EmployeeApi.getPresencesHistory(month, year);
+          final data = Map<String, dynamic>.from(
+            response.data['data'] as Map,
+          );
+          _applyData(data);
+          await HistoryCache.save(year, month, data);
+
+          // Selesaikan loading dulu agar UI tidak spinner
+          state = state.copyWith(isLoading: false);
+
+          // Pre-download dokumen izin di background, tidak memblokir UI
+          _cacheIzinDocuments().catchError((_) {});
+        } on DioException catch (_) {
+          // Fallback ke cache
+          await _loadCachedFallback(
+            year,
+            month,
+            'Anda sedang offline — tidak dapat memuat data terbaru',
+          );
+        } catch (_) {
+          // Tangkap semua error lain agar isLoading selalu direset
+          await _loadCachedFallback(
+            year,
+            month,
+            'Gagal memuat data riwayat.',
+          );
+        }
+      } else {
+        // Offline: load dari cache
+        await _loadCachedFallback(year, month, null);
       }
-      state = state.copyWith(isLoading: false);
+    } catch (_) {
+      state = state.copyWith(
+        isLoading: false,
+        errorMessage: 'Gagal memuat data riwayat.',
+      );
+    } finally {
+      if (mounted && state.isLoading) {
+        state = state.copyWith(isLoading: false);
+      }
     }
   }
 
+  Future<void> _loadCachedFallback(
+    int year,
+    int month,
+    String? errorMessage,
+  ) async {
+    try {
+      final cached = await HistoryCache.load(year, month);
+      if (cached != null) {
+        _applyData(cached);
+      }
+    } catch (_) {
+      // Abaikan jika cache rusak
+    }
+    state = state.copyWith(
+      isLoading: false,
+      errorMessage: errorMessage,
+    );
+  }
+
   void _applyData(Map<String, dynamic> data) {
-    final rawHolidays = data['holidays'] as Map<String, dynamic>? ?? {};
+    final rawHolidaysData = data['holidays'];
+    final rawHolidays = rawHolidaysData is Map
+        ? Map<String, dynamic>.from(rawHolidaysData)
+        : <String, dynamic>{};
     final holidays = rawHolidays.map(
       (k, v) => MapEntry(k, v.toString()),
     );
 
-    final rawPresences = data['presences'] as List<dynamic>? ?? [];
+    final rawPresencesData = data['presences'];
+    final rawPresences =
+        rawPresencesData is List ? rawPresencesData : <dynamic>[];
     final presences = <Map<String, dynamic>>[];
     int futureAbsentCount = 0;
-    
+
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
 
     for (final raw in rawPresences) {
-      final p = Map<String, dynamic>.from(raw as Map<String, dynamic>);
+      if (raw is! Map) continue;
+      final p = Map<String, dynamic>.from(raw);
       final dateStr = p['date'] as String?;
       bool skip = false;
       if (dateStr != null) {
         final parts = dateStr.split('-');
         if (parts.length == 3) {
-          final date = DateTime(
-            int.parse(parts[0]),
-            int.parse(parts[1]),
-            int.parse(parts[2]),
-          );
-          if (date.isAfter(today)) {
-            if (p['status'] == 'absent') {
+          final y = int.tryParse(parts[0]);
+          final m = int.tryParse(parts[1]);
+          final d = int.tryParse(parts[2]);
+          if (y != null && m != null && d != null) {
+            final date = DateTime(y, m, d);
+            if (date.isAfter(today) && p['status'] == 'absent') {
               skip = true;
               futureAbsentCount++;
             }
@@ -145,13 +187,16 @@ class HistoryNotifier extends StateNotifier<HistoryState> {
       }
     }
 
-    final summary = data['summary'] != null
-        ? Map<String, dynamic>.from(data['summary'] as Map<String, dynamic>)
+    final rawSummary = data['summary'];
+    final summary = rawSummary is Map
+        ? Map<String, dynamic>.from(rawSummary)
         : null;
 
     if (summary != null && summary.containsKey('absent')) {
-      summary['absent'] = (summary['absent'] as int) - futureAbsentCount;
-      if ((summary['absent'] as int) < 0) summary['absent'] = 0;
+      var absent = (summary['absent'] as num?)?.toInt() ?? 0;
+      absent -= futureAbsentCount;
+      if (absent < 0) absent = 0;
+      summary['absent'] = absent;
     }
 
     state = state.copyWith(
